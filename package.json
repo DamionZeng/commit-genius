@@ -1,0 +1,143 @@
+{
+  "name": "commit-genius",
+  "displayName": "Commit Genius",
+  "description": "AI-powered Conventional Commit, CHANGELOG, and PR description generator.",
+  "version": "0.0.1",
+  "publisher": "your-publisher",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Source Control"
+  ],
+  "activationEvents": [
+    "onCommand:commitGenius.generateCommitMessage",
+    "onCommand:commitGenius.generateChangelog",
+    "onCommand:commitGenius.generatePrDescription",
+    "onCommand:commitGenius.openPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "commitGenius.generateCommitMessage",
+        "title": "Commit Genius: Generate Commit Message"
+      },
+      {
+        "command": "commitGenius.generateChangelog",
+        "title": "Commit Genius: Generate CHANGELOG"
+      },
+      {
+        "command": "commitGenius.generatePrDescription",
+        "title": "Commit Genius: Generate PR Description"
+      },
+      {
+        "command": "commitGenius.openPanel",
+        "title": "Commit Genius: Open",
+        "icon": {
+          "light": "media/commit-genius.svg",
+          "dark": "media/commit-genius.svg"
+        }
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "commitGenius.openPanel",
+          "when": "editorTextFocus",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Commit Genius",
+      "properties": {
+        "commitGenius.ai.baseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "OpenAI-compatible API base URL."
+        },
+        "commitGenius.ai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the AI provider."
+        },
+        "commitGenius.ai.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model name for chat completions."
+        },
+        "commitGenius.ai.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for the AI model."
+        },
+        "commitGenius.commit.diffScope": {
+          "type": "string",
+          "enum": [
+            "staged",
+            "workingTree"
+          ],
+          "default": "staged",
+          "description": "Which diff to use when generating commit messages."
+        },
+        "commitGenius.changelog.path": {
+          "type": "string",
+          "default": "CHANGELOG.md",
+          "description": "Output path for generated changelog (relative to workspace root)."
+        },
+        "commitGenius.pr.platform": {
+          "type": "string",
+          "enum": [
+            "github",
+            "gitlab",
+            "bitbucket"
+          ],
+          "default": "github",
+          "description": "Target platform format for PR description."
+        },
+        "commitGenius.pr.baseRef": {
+          "type": "string",
+          "default": "",
+          "description": "Base ref for PR comparison, e.g. origin/main. If empty, auto-detected."
+        },
+        "commitGenius.pr.includeChecklist": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include a lightweight review checklist in the generated PR description."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint .",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.19",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.5.0",
+    "@typescript-eslint/parser": "^7.5.0",
+    "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^2.26.0",
+    "eslint": "^8.57.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.3.0",
+    "typescript": "5.5.4"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "simple-git": "^3.25.0"
+  }
+}
