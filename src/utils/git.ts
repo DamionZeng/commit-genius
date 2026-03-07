@@ -19,6 +19,19 @@ export async function getHeadBranch(git: SimpleGit): Promise<string> {
   return branch.current;
 }
 
+export async function getLocalBranches(
+  git: SimpleGit
+): Promise<{ current: string; all: string[] }> {
+  const branch = await git.branchLocal();
+  return { current: branch.current, all: branch.all };
+}
+
+export async function checkoutLocalBranch(git: SimpleGit, branch: string): Promise<void> {
+  const b = branch.trim();
+  if (!b) throw new Error('需要提供要切换的分支名。');
+  await git.checkout(b);
+}
+
 export async function getDiff(git: SimpleGit, scope: 'staged' | 'workingTree'): Promise<string> {
   if (scope === 'staged') {
     return git.diff(['--cached']);

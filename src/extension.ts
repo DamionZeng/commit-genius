@@ -9,6 +9,7 @@ import { chatJson, chatText } from './utils/ai';
 import { getConfig } from './utils/config';
 import {
   amendWithMessage,
+  checkoutLocalBranch,
   commitWithMessage,
   createGit,
   detectBaseRef,
@@ -16,6 +17,7 @@ import {
   getCompareSummary,
   getDiff,
   getHeadBranch,
+  getLocalBranches,
   getRecentCommits,
   getStatusSummary,
   pushCurrentBranch,
@@ -36,6 +38,7 @@ type DashboardAction =
   | 'testConnection'
   | 'openSettings'
   | 'gitStatus'
+  | 'checkoutBranch'
   | 'stageAll'
   | 'unstageAll'
   | 'commitGenerated'
@@ -65,6 +68,7 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       action === 'testConnection' ||
       action === 'openSettings' ||
       action === 'gitStatus' ||
+      action === 'checkoutBranch' ||
       action === 'stageAll' ||
       action === 'unstageAll' ||
       action === 'commitGenerated' ||
@@ -124,6 +128,7 @@ type PanelToWebviewMessage =
   | { type: 'toast'; level: 'success' | 'error'; message: string }
   | { type: 'runState'; state: 'running' | 'idle'; action?: DashboardAction; durationMs?: number }
   | { type: 'log'; level: LogLevel; message: string }
+  | { type: 'branches'; current: string; branches: string[] }
   | { type: 'result'; action: DashboardAction; title: string; content: string };
 
 type PrJson = { title: string; body: string };
@@ -211,7 +216,7 @@ class DashboardPanel {
       } catch (err) {
         void err;
       }
-      await this.post({ type: 'toast', level: 'success', message: '已发送取消请求。' });
+      await this.post({ type: 'toast', level: 'success', message: 'Cancel request sent.' });
       return;
     }
 
@@ -250,7 +255,7 @@ class DashboardPanel {
         }
         await Promise.all(updates);
 
-        await this.post({ type: 'toast', level: 'success', message: '设置已保存。' });
+        await this.post({ type: 'toast', level: 'success', message: 'Settings saved.' });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await this.post({ type: 'toast', level: 'error', message: msg });
@@ -265,7 +270,11 @@ class DashboardPanel {
 
   private async runAction(action: DashboardAction, payload?: unknown): Promise<void> {
     if (this.abortController) {
-      await this.post({ type: 'toast', level: 'error', message: '已有任务正在运行，请先取消或等待完成。' });
+      await this.post({
+        type: 'toast',
+        level: 'error',
+        message: 'A task is already running. Cancel it or wait for it to finish.'
+      });
       return;
     }
 
@@ -281,7 +290,7 @@ class DashboardPanel {
     try {
       if (action === 'openSettings') {
         await vscode.commands.executeCommand('workbench.action.openSettings');
-        await this.post({ type: 'toast', level: 'success', message: '已打开 Settings。' });
+        await this.post({ type: 'toast', level: 'success', message: 'Opened Settings.' });
         return;
       }
 
@@ -310,6 +319,11 @@ class DashboardPanel {
         return lines.join('\n');
       };
 
+      const renderBranches = async (): Promise<void> => {
+        const b = await getLocalBranches(git);
+        await this.post({ type: 'branches', current: b.current, branches: b.all });
+      };
+
       const confirm = async (message: string, confirmLabel: string): Promise<boolean> => {
         const picked = await vscode.window.showWarningMessage(message, { modal: true }, confirmLabel);
         return picked === confirmLabel;
@@ -326,29 +340,44 @@ class DashboardPanel {
           { signal: this.abortController.signal, timeoutMs: 60_000 }
         );
         await log('success', 'AI responded.');
-        await this.post({ type: 'result', action, title: '连接测试结果', content: text });
-        await this.post({ type: 'toast', level: 'success', message: '连接测试完成。' });
+        await this.post({ type: 'result', action, title: 'Connection test result', content: text });
+        await this.post({ type: 'toast', level: 'success', message: 'Connection test completed.' });
         return;
       }
 
       if (action === 'gitStatus') {
         const content = await renderStatus();
+        await renderBranches();
         await this.post({ type: 'result', action, title: 'Git Status', content });
-        await this.post({ type: 'toast', level: 'success', message: '已获取 Git 状态。' });
+        await this.post({ type: 'toast', level: 'success', message: 'Git status refreshed.' });
+        return;
+      }
+
+      if (action === 'checkoutBranch') {
+        if (!isRecord(payload) || typeof payload.branch !== 'string') {
+          await this.post({ type: 'toast', level: 'error', message: 'Missing branch parameter.' });
+          return;
+        }
+
+        await checkoutLocalBranch(git, payload.branch);
+        const content = await renderStatus();
+        await renderBranches();
+        await this.post({ type: 'result', action: 'gitStatus', title: 'Git Status', content });
+        await this.post({ type: 'toast', level: 'success', message: `Switched to branch: ${payload.branch}` });
         return;
       }
 
       if (action === 'stageAll') {
         await stageAll(git);
-        await this.post({ type: 'result', action, title: '已暂存所有改动', content: await renderStatus() });
-        await this.post({ type: 'toast', level: 'success', message: '已暂存所有改动。' });
+        await this.post({ type: 'result', action, title: 'Staged all changes', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'All changes staged.' });
         return;
       }
 
       if (action === 'unstageAll') {
         await unstageAll(git);
-        await this.post({ type: 'result', action, title: '已取消暂存', content: await renderStatus() });
-        await this.post({ type: 'toast', level: 'success', message: '已取消暂存。' });
+        await this.post({ type: 'result', action, title: 'Unstaged changes', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Unstaged.' });
         return;
       }
 
@@ -359,7 +388,11 @@ class DashboardPanel {
         const diff = await getDiff(git, cfg.commit.diffScope);
 
         if (!diff.trim()) {
-          await this.post({ type: 'toast', level: 'error', message: '未发现 diff：请先暂存改动或切换 diff scope。' });
+          await this.post({
+            type: 'toast',
+            level: 'error',
+            message: 'No diff found. Stage changes or switch diff scope.'
+          });
           return;
         }
 
@@ -383,14 +416,18 @@ class DashboardPanel {
         }
 
         await this.post({ type: 'result', action, title: 'Commit Message', content: message });
-        await this.post({ type: 'toast', level: 'success', message: '已生成 Commit Message。' });
+        await this.post({ type: 'toast', level: 'success', message: 'Commit message generated.' });
         return;
       }
 
       if (action === 'commitGenerated') {
         const status = await getStatusSummary(git);
         if (status.staged === 0) {
-          await this.post({ type: 'toast', level: 'error', message: '没有暂存区改动：请先暂存改动再提交。' });
+          await this.post({
+            type: 'toast',
+            level: 'error',
+            message: 'No staged changes. Stage changes before committing.'
+          });
           return;
         }
 
@@ -403,7 +440,7 @@ class DashboardPanel {
           await log('info', `branch=${branch}`);
           const diff = await getDiff(git, 'staged');
           if (!diff.trim()) {
-            await this.post({ type: 'toast', level: 'error', message: '未发现暂存区 diff：请先暂存改动。' });
+            await this.post({ type: 'toast', level: 'error', message: 'No staged diff found. Stage changes first.' });
             return;
           }
 
@@ -418,9 +455,9 @@ class DashboardPanel {
           );
         }
 
-        const ok = await confirm('确认提交？', '提交');
+        const ok = await confirm('Commit changes?', 'Commit');
         if (!ok) {
-          await this.post({ type: 'toast', level: 'success', message: '已取消提交。' });
+          await this.post({ type: 'toast', level: 'success', message: 'Commit cancelled.' });
           return;
         }
 
@@ -430,17 +467,21 @@ class DashboardPanel {
         await this.post({
           type: 'result',
           action,
-          title: hash ? `已提交 ${hash.slice(0, 7)}` : '已提交',
+          title: hash ? `Committed ${hash.slice(0, 7)}` : 'Committed',
           content: `${message.trimEnd()}\n\n${await renderStatus()}`
         });
-        await this.post({ type: 'toast', level: 'success', message: '已提交。' });
+        await this.post({ type: 'toast', level: 'success', message: 'Committed.' });
         return;
       }
 
       if (action === 'amendGenerated') {
         const status = await getStatusSummary(git);
         if (status.staged === 0) {
-          await this.post({ type: 'toast', level: 'error', message: '没有暂存区改动：请先暂存改动再 amend。' });
+          await this.post({
+            type: 'toast',
+            level: 'error',
+            message: 'No staged changes. Stage changes before amending.'
+          });
           return;
         }
 
@@ -453,7 +494,7 @@ class DashboardPanel {
           await log('info', `branch=${branch}`);
           const diff = await getDiff(git, 'staged');
           if (!diff.trim()) {
-            await this.post({ type: 'toast', level: 'error', message: '未发现暂存区 diff：请先暂存改动。' });
+            await this.post({ type: 'toast', level: 'error', message: 'No staged diff found. Stage changes first.' });
             return;
           }
 
@@ -468,9 +509,9 @@ class DashboardPanel {
           );
         }
 
-        const ok = await confirm('确认 Amend？', 'Amend');
+        const ok = await confirm('Amend the last commit?', 'Amend');
         if (!ok) {
-          await this.post({ type: 'toast', level: 'success', message: '已取消 amend。' });
+          await this.post({ type: 'toast', level: 'success', message: 'Amend cancelled.' });
           return;
         }
 
@@ -480,30 +521,30 @@ class DashboardPanel {
         await this.post({
           type: 'result',
           action,
-          title: hash ? `已 amend ${hash.slice(0, 7)}` : '已 amend',
+          title: hash ? `Amended ${hash.slice(0, 7)}` : 'Amended',
           content: `${message.trimEnd()}\n\n${await renderStatus()}`
         });
-        await this.post({ type: 'toast', level: 'success', message: '已 amend。' });
+        await this.post({ type: 'toast', level: 'success', message: 'Amended.' });
         return;
       }
 
       if (action === 'push') {
-        const ok = await confirm('将推送当前分支到 origin。继续？', '推送');
+        const ok = await confirm('Push the current branch to origin?', 'Push');
         if (!ok) {
-          await this.post({ type: 'toast', level: 'success', message: '已取消推送。' });
+          await this.post({ type: 'toast', level: 'success', message: 'Push cancelled.' });
           return;
         }
 
         await pushCurrentBranch(git);
-        await this.post({ type: 'result', action, title: '已推送', content: await renderStatus() });
-        await this.post({ type: 'toast', level: 'success', message: '已推送。' });
+        await this.post({ type: 'result', action, title: 'Pushed', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Pushed.' });
         return;
       }
 
       if (action === 'revert') {
         const commits = await getRecentCommits(git, 30);
         if (commits.length === 0) {
-          await this.post({ type: 'toast', level: 'error', message: '仓库里没有可用的 commit。' });
+          await this.post({ type: 'toast', level: 'error', message: 'No commits found in this repo.' });
           return;
         }
 
@@ -513,37 +554,37 @@ class DashboardPanel {
             description: `${c.authorName} · ${c.date}`,
             hash: c.hash
           })),
-          { title: '选择要 revert 的提交（将生成一个新的 revert commit）' }
+          { title: 'Select a commit to revert (creates a new revert commit)' }
         );
         if (!picked) {
-          await this.post({ type: 'toast', level: 'success', message: '已取消 revert。' });
+          await this.post({ type: 'toast', level: 'success', message: 'Revert cancelled.' });
           return;
         }
 
-        const ok = await confirm(`将 revert：${picked.label}。继续？`, 'Revert');
+        const ok = await confirm(`Revert: ${picked.label}?`, 'Revert');
         if (!ok) {
-          await this.post({ type: 'toast', level: 'success', message: '已取消 revert。' });
+          await this.post({ type: 'toast', level: 'success', message: 'Revert cancelled.' });
           return;
         }
 
         await revertCommit(git, picked.hash);
-        await this.post({ type: 'result', action, title: '已 revert', content: await renderStatus() });
-        await this.post({ type: 'toast', level: 'success', message: '已 revert。' });
+        await this.post({ type: 'result', action, title: 'Reverted', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Reverted.' });
         return;
       }
 
       if (action === 'reset') {
         const option = await vscode.window.showQuickPick(
           [
-            { label: '撤回上一次提交（保留更改）', mode: 'soft' as const, ref: 'HEAD~1', dangerous: false },
-            { label: '撤回上一次提交（取消暂存）', mode: 'mixed' as const, ref: 'HEAD~1', dangerous: false },
-            { label: '强制回退上一次提交（丢弃更改）', mode: 'hard' as const, ref: 'HEAD~1', dangerous: true },
-            { label: '选择回退到某个提交…', mode: undefined, ref: undefined, dangerous: true }
+            { label: 'Undo last commit (keep changes)', mode: 'soft' as const, ref: 'HEAD~1', dangerous: false },
+            { label: 'Undo last commit (unstage changes)', mode: 'mixed' as const, ref: 'HEAD~1', dangerous: false },
+            { label: 'Hard reset last commit (discard changes)', mode: 'hard' as const, ref: 'HEAD~1', dangerous: true },
+            { label: 'Reset to a specific commit…', mode: undefined, ref: undefined, dangerous: true }
           ],
-          { title: 'Reset 操作（请谨慎）' }
+          { title: 'Reset (be careful)' }
         );
         if (!option) {
-          await this.post({ type: 'toast', level: 'success', message: '已取消 reset。' });
+          await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
           return;
         }
 
@@ -556,7 +597,7 @@ class DashboardPanel {
         } else {
           const commits = await getRecentCommits(git, 30);
           if (commits.length === 0) {
-            await this.post({ type: 'toast', level: 'error', message: '仓库里没有可用的 commit。' });
+            await this.post({ type: 'toast', level: 'error', message: 'No commits found in this repo.' });
             return;
           }
 
@@ -566,24 +607,24 @@ class DashboardPanel {
               description: `${c.authorName} · ${c.date}`,
               hash: c.hash
             })),
-            { title: '选择 reset 目标（HEAD 将移动到该提交）' }
+            { title: 'Select a reset target (HEAD will move to this commit)' }
           );
           if (!target) {
-            await this.post({ type: 'toast', level: 'success', message: '已取消 reset。' });
+            await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
             return;
           }
           ref = target.hash;
 
           const modePick = await vscode.window.showQuickPick(
             [
-              { label: 'soft（保留更改）', mode: 'soft' as const, dangerous: false },
-              { label: 'mixed（取消暂存）', mode: 'mixed' as const, dangerous: false },
-              { label: 'hard（丢弃更改）', mode: 'hard' as const, dangerous: true }
+              { label: 'soft (keep changes)', mode: 'soft' as const, dangerous: false },
+              { label: 'mixed (unstage changes)', mode: 'mixed' as const, dangerous: false },
+              { label: 'hard (discard changes)', mode: 'hard' as const, dangerous: true }
             ],
-            { title: '选择 reset 模式' }
+            { title: 'Select a reset mode' }
           );
           if (!modePick) {
-            await this.post({ type: 'toast', level: 'success', message: '已取消 reset。' });
+            await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
             return;
           }
           mode = modePick.mode;
@@ -592,33 +633,33 @@ class DashboardPanel {
 
         if (mode === 'hard') {
           const token = await vscode.window.showInputBox({
-            title: '危险操作确认',
-            prompt: 'hard reset 会丢弃更改。输入 RESET 确认继续',
+            title: 'Dangerous action confirmation',
+            prompt: 'Hard reset will discard changes. Type RESET to continue.',
             placeHolder: 'RESET',
             ignoreFocusOut: true
           });
           if (token !== 'RESET') {
-            await this.post({ type: 'toast', level: 'success', message: '已取消 hard reset。' });
+            await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
             return;
           }
         } else {
-          const ok = await confirm(`将执行：git reset --${mode} ${ref}。继续？`, '继续');
+          const ok = await confirm(`Run: git reset --${mode} ${ref}?`, 'Continue');
           if (!ok) {
-            await this.post({ type: 'toast', level: 'success', message: '已取消 reset。' });
+            await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
             return;
           }
         }
 
         await resetTo(git, mode, ref);
-        await this.post({ type: 'result', action, title: `已 reset --${mode}`, content: await renderStatus() });
-        await this.post({ type: 'toast', level: 'success', message: '已 reset。' });
+        await this.post({ type: 'result', action, title: `Reset --${mode}`, content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Reset complete.' });
         return;
       }
 
       if (action === 'changelog') {
         const commits = await getRecentCommits(git, 200);
         if (commits.length === 0) {
-          await this.post({ type: 'toast', level: 'error', message: '仓库里没有可用的 commit。' });
+          await this.post({ type: 'toast', level: 'error', message: 'No commits found in this repo.' });
           return;
         }
 
@@ -643,7 +684,7 @@ class DashboardPanel {
         await vscode.window.showTextDocument(doc, { preview: false });
 
         await this.post({ type: 'result', action, title: `CHANGELOG (${cfg.changelog.path})`, content: markdown.trimEnd() });
-        await this.post({ type: 'toast', level: 'success', message: '已生成 CHANGELOG。' });
+        await this.post({ type: 'toast', level: 'success', message: 'CHANGELOG generated.' });
         return;
       }
 
@@ -655,7 +696,7 @@ class DashboardPanel {
 
         const diff = await getCompareDiff(git, baseRef);
         if (!diff.trim()) {
-          await this.post({ type: 'toast', level: 'error', message: `未发现 ${baseRef} 与 HEAD 的差异。` });
+          await this.post({ type: 'toast', level: 'error', message: `No difference between ${baseRef} and HEAD.` });
           return;
         }
 
@@ -684,7 +725,7 @@ class DashboardPanel {
         await log('success', 'copied to clipboard.');
 
         await this.post({ type: 'result', action, title: 'PR Description (copied)', content: clipboardText.trimEnd() });
-        await this.post({ type: 'toast', level: 'success', message: '已生成 PR 描述并复制到剪贴板。' });
+        await this.post({ type: 'toast', level: 'success', message: 'PR description generated and copied to clipboard.' });
         return;
       }
     } catch (err) {
@@ -704,7 +745,7 @@ class DashboardPanel {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'webview.js'));
 
     return `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -736,7 +777,7 @@ class DashboardPanel {
         background: linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, transparent), var(--bg));
       }
 
-      .wrap { padding: 20px; max-width: 800px; margin: 0 auto; }
+      .wrap { padding: 20px; max-width: 1100px; margin: 0 auto; }
       
       /* Title Bar */
       .title {
@@ -759,20 +800,93 @@ class DashboardPanel {
         font-weight: normal;
       }
 
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .icon-btn svg {
+        width: 14px;
+        height: 14px;
+        flex: 0 0 auto;
+      }
+
+      /* Branch Bar */
+      .branch-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        margin-bottom: 14px;
+      }
+      .branch-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .branch-label svg { width: 14px; height: 14px; }
+      .branch-list {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        overflow: auto;
+        padding: 2px 0;
+        flex: 1;
+      }
+      .branch-chip {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background 0.1s, border-color 0.1s;
+      }
+      .branch-chip:hover { background: color-mix(in srgb, var(--bg) 82%, transparent); }
+      .branch-chip.is-active {
+        border-color: color-mix(in srgb, var(--focus) 90%, transparent);
+        background: color-mix(in srgb, var(--focus) 14%, transparent);
+      }
+
       /* Flow Chart Styles */
       .flow-container {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 0;
+        display: grid;
+        gap: 14px;
         margin-bottom: 32px;
       }
       
-      .node-wrapper {
+      .flow-row {
+        display: flex;
+        align-items: stretch;
+        gap: 12px;
         width: 100%;
-        max-width: 500px;
+      }
+
+      .flow-step { flex: 1; min-width: 0; }
+      .flow-link {
+        width: 28px;
         position: relative;
-        z-index: 1;
+        flex: 0 0 auto;
+      }
+      .flow-link::before {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 100%;
+        height: 2px;
+        transform: translate(-50%, -50%);
+        background: color-mix(in srgb, var(--border) 70%, transparent);
+        border-radius: 999px;
       }
       
       .node {
@@ -785,6 +899,12 @@ class DashboardPanel {
         gap: 12px;
         transition: all 0.2s ease;
         position: relative;
+        height: 100%;
+      }
+
+      .node.is-active {
+        border-color: color-mix(in srgb, var(--focus) 90%, transparent);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 45%, transparent), 0 10px 30px rgba(0,0,0,0.12);
       }
       
       .node:hover {
@@ -800,7 +920,6 @@ class DashboardPanel {
       }
       
       .node-icon {
-        font-size: 20px;
         width: 36px;
         height: 36px;
         display: flex;
@@ -808,6 +927,11 @@ class DashboardPanel {
         justify-content: center;
         background: color-mix(in srgb, var(--bg) 50%, transparent);
         border-radius: 8px;
+        color: color-mix(in srgb, var(--fg) 92%, transparent);
+      }
+      .node-icon svg {
+        width: 18px;
+        height: 18px;
       }
       
       .node-title {
@@ -823,6 +947,14 @@ class DashboardPanel {
         padding: 2px 8px;
         border-radius: 99px;
       }
+      .node-status.success {
+        color: #2ea043;
+        background: color-mix(in srgb, #2ea043 14%, transparent);
+      }
+      .node-status.warning {
+        color: #d29922;
+        background: color-mix(in srgb, #d29922 14%, transparent);
+      }
 
       .node-actions {
         display: flex;
@@ -831,28 +963,13 @@ class DashboardPanel {
         margin-top: 4px;
       }
 
-      .connector {
-        width: 2px;
-        height: 32px;
-        background: var(--border);
-        position: relative;
-        overflow: hidden;
-      }
-      
-      .connector::after {
-        content: '';
-        position: absolute;
-        top: -100%;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(to bottom, transparent, var(--accent), transparent);
-        animation: flow 1.5s infinite linear;
-      }
-      
-      @keyframes flow {
-        0% { top: -100%; }
-        100% { top: 100%; }
+      @media (max-width: 900px) {
+        .flow-row { flex-direction: column; }
+        .flow-link { width: 100%; height: 18px; }
+        .flow-link::before {
+          width: 2px;
+          height: 100%;
+        }
       }
 
       /* AI Input Area */
@@ -1017,7 +1134,7 @@ class DashboardPanel {
       <noscript>
         <div class="toast show error">
           <div class="dot bad"></div>
-          <div><strong>Webview 脚本未启用</strong></div>
+          <div><strong>Webview scripts are disabled</strong></div>
         </div>
       </noscript>
 
@@ -1028,86 +1145,135 @@ class DashboardPanel {
           <strong id="toastTitle" style="display:block; margin-bottom:2px"></strong>
           <span id="toastBody" style="font-size:11px; color:var(--muted)"></span>
         </div>
-        <button class="btn secondary" id="toastClose" type="button" style="padding:2px 6px; font-size:10px">✕</button>
+        <button class="btn secondary" id="toastClose" type="button" style="padding:2px 6px; font-size:10px" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:12px; height:12px">
+            <path d="M18 6 6 18"></path>
+            <path d="M6 6l12 12"></path>
+          </svg>
+        </button>
       </div>
 
       <!-- Header -->
       <div class="title">
-        <h1>Commit Genius <span class="sub">AI 驱动的 Git 助手</span></h1>
+        <h1>Commit Genius <span class="sub">AI-powered Git assistant</span></h1>
         <div class="inline">
-          <button class="btn secondary" id="openSettingsPanel" type="button">⚙ 设置</button>
+          <button class="btn secondary icon-btn" id="openSettingsPanel" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path>
+              <path d="M19.4 15a8.2 8.2 0 0 0 .1-6l-2.1-.4a7 7 0 0 0-1.1-1.9l1.2-1.8a8.2 8.2 0 0 0-5.2-3L11.5 4a7.6 7.6 0 0 0-2.2 0L8.7 1.9a8.2 8.2 0 0 0-5.2 3l1.2 1.8a7 7 0 0 0-1.1 1.9L1.5 9a8.2 8.2 0 0 0 .1 6l2.1.4a7 7 0 0 0 1.1 1.9l-1.2 1.8a8.2 8.2 0 0 0 5.2 3l.6-2.1a7.6 7.6 0 0 0 2.2 0l.6 2.1a8.2 8.2 0 0 0 5.2-3l-1.2-1.8a7 7 0 0 0 1.1-1.9l2.1-.4Z"></path>
+            </svg>
+            Settings
+          </button>
         </div>
       </div>
 
       <!-- Flow Chart -->
       <div class="flow-container">
-        <!-- Step 1: Workspace -->
-        <div class="node-wrapper">
-          <div class="node">
-            <div class="node-header">
-              <div class="node-icon">📂</div>
-              <div class="node-title">工作区 (Working Directory)</div>
-              <div class="node-status" id="status-workspace">检测中...</div>
-            </div>
-            <div class="node-actions">
-              <button class="btn" data-action="stageAll">全部暂存</button>
-              <button class="btn secondary" data-action="gitStatus">刷新状态</button>
-            </div>
+        <div class="branch-bar">
+          <div class="branch-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M7 4v16"></path>
+              <path d="M7 7h8a3 3 0 0 1 3 3v10"></path>
+              <circle cx="7" cy="4" r="2"></circle>
+              <circle cx="7" cy="20" r="2"></circle>
+              <circle cx="18" cy="20" r="2"></circle>
+            </svg>
+            Local branches
           </div>
+          <div class="branch-list" id="branchList"></div>
+          <button class="btn secondary" data-action="gitStatus" type="button">Refresh</button>
         </div>
 
-        <div class="connector"></div>
-
-        <!-- Step 2: Staging -->
-        <div class="node-wrapper">
-          <div class="node">
-            <div class="node-header">
-              <div class="node-icon">📦</div>
-              <div class="node-title">暂存区 (Staging Area)</div>
-              <div class="node-status" id="status-stage">未暂存</div>
-            </div>
-            <div class="node-actions">
-              <button class="btn secondary" data-action="unstageAll">取消暂存</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="connector"></div>
-
-        <!-- Step 3: Commit Message -->
-        <div class="node-wrapper">
-          <div class="node" style="border-color: var(--focus);">
-            <div class="node-header">
-              <div class="node-icon">🤖</div>
-              <div class="node-title">
-                提交信息 (Commit Message)
-                <span class="ai-badge">AI Powered</span>
+        <div class="flow-row" aria-label="Git workflow">
+          <div class="flow-step">
+            <div class="node" data-step="working">
+              <div class="node-header">
+                <div class="node-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"></path>
+                    <path d="M3 7V5a2 2 0 0 1 2-2h4l2 2"></path>
+                  </svg>
+                </div>
+                <div class="node-title">Working Directory</div>
+                <div class="node-status" id="status-workspace">Checking...</div>
+              </div>
+              <div class="node-actions">
+                <button class="btn" data-action="stageAll">Stage all</button>
               </div>
             </div>
-            <div class="node-content">
-              <textarea id="commit-message-input" class="ai-input" placeholder="在此输入提交信息，或点击下方按钮使用 AI 生成..."></textarea>
-            </div>
-            <div class="node-actions">
-              <button class="btn" data-action="commitMessage">✨ AI 生成消息</button>
-              <button class="btn" data-action="commitGenerated">提交 (Commit)</button>
-              <button class="btn secondary" data-action="amendGenerated">Amend</button>
+          </div>
+
+          <div class="flow-link" aria-hidden="true"></div>
+
+          <div class="flow-step">
+            <div class="node" data-step="staging">
+              <div class="node-header">
+                <div class="node-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7Z"></path>
+                    <path d="M3.3 7.3 12 12l8.7-4.7"></path>
+                    <path d="M12 22V12"></path>
+                  </svg>
+                </div>
+                <div class="node-title">Staging Area</div>
+                <div class="node-status" id="status-stage">Empty</div>
+              </div>
+              <div class="node-actions">
+                <button class="btn secondary" data-action="unstageAll">Unstage all</button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="connector"></div>
+          <div class="flow-link" aria-hidden="true"></div>
 
-        <!-- Step 4: Remote -->
-        <div class="node-wrapper">
-          <div class="node">
-            <div class="node-header">
-              <div class="node-icon">🚀</div>
-              <div class="node-title">远程仓库 (Remote)</div>
+          <div class="flow-step">
+            <div class="node" data-step="local">
+              <div class="node-header">
+                <div class="node-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M6 6v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6"></path>
+                    <path d="M9 10h6"></path>
+                    <path d="M9 14h6"></path>
+                  </svg>
+                </div>
+                <div class="node-title">
+                  Local Repo
+                  <span class="ai-badge">AI Powered</span>
+                </div>
+                <div class="node-status" id="status-local">—</div>
+              </div>
+              <div class="node-content">
+                <textarea id="commit-message-input" class="ai-input" placeholder="Write a commit message, or generate one with AI..."></textarea>
+              </div>
+              <div class="node-actions">
+                <button class="btn" data-action="commitMessage">Generate</button>
+                <button class="btn" data-action="commitGenerated">Commit</button>
+                <button class="btn secondary" data-action="amendGenerated">Amend</button>
+              </div>
             </div>
-            <div class="node-actions">
-              <button class="btn" data-action="push">推送 (Push)</button>
-              <button class="btn danger" data-action="revert">Revert</button>
-              <button class="btn danger" data-action="reset">Reset</button>
+          </div>
+
+          <div class="flow-link" aria-hidden="true"></div>
+
+          <div class="flow-step">
+            <div class="node" data-step="remote">
+              <div class="node-header">
+                <div class="node-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M20 17.5a4.5 4.5 0 0 0-2.2-8.4A6 6 0 0 0 6.2 7.4a4.5 4.5 0 0 0 .8 9.0H18"></path>
+                    <path d="M12 13v7"></path>
+                    <path d="M8.5 16.5 12 13l3.5 3.5"></path>
+                  </svg>
+                </div>
+                <div class="node-title">Remote Repo</div>
+                <div class="node-status" id="status-remote">—</div>
+              </div>
+              <div class="node-actions">
+                <button class="btn" data-action="push">Push</button>
+                <button class="btn danger" data-action="revert">Revert</button>
+                <button class="btn danger" data-action="reset">Reset</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1115,16 +1281,31 @@ class DashboardPanel {
         <!-- Extra Features -->
         <div class="features-grid">
           <div class="feature-card">
-            <div class="node-icon">📝</div>
+            <div class="node-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"></path>
+                <path d="M14 3v6h6"></path>
+                <path d="M8 13h8"></path>
+                <path d="M8 17h6"></path>
+              </svg>
+            </div>
             <div class="node-title">Changelog</div>
-            <div style="font-size:11px; color:var(--muted)">自动生成更新日志</div>
-            <button class="btn secondary" data-action="changelog">✨ 生成日志</button>
+            <div style="font-size:11px; color:var(--muted)">Generate a changelog</div>
+            <button class="btn secondary" data-action="changelog">Generate</button>
           </div>
           <div class="feature-card">
-            <div class="node-icon">🔀</div>
+            <div class="node-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 4v16"></path>
+                <path d="M7 7h7a3 3 0 0 1 3 3v10"></path>
+                <path d="M10 17H7"></path>
+                <path d="M17 4v2"></path>
+                <path d="M15.5 5.5 17 4l1.5 1.5"></path>
+              </svg>
+            </div>
             <div class="node-title">Pull Request</div>
-            <div style="font-size:11px; color:var(--muted)">生成 PR 标题和描述</div>
-            <button class="btn secondary" data-action="prDescription">✨ 生成 PR 描述</button>
+            <div style="font-size:11px; color:var(--muted)">Generate PR title and description</div>
+            <button class="btn secondary" data-action="prDescription">Generate</button>
           </div>
         </div>
       </div>
@@ -1132,9 +1313,9 @@ class DashboardPanel {
       <!-- Log Section (Minimized) -->
       <div class="log-section">
         <div class="node-header" style="margin-bottom:8px">
-          <div class="node-title" style="font-size:12px">运行日志</div>
-          <div class="node-status" id="statusText">空闲</div>
-          <button class="btn secondary" id="clearLog" style="padding:2px 6px; font-size:10px">清空</button>
+          <div class="node-title" style="font-size:12px">Activity</div>
+          <div class="node-status" id="statusText">Idle</div>
+          <button class="btn secondary" id="clearLog" style="padding:2px 6px; font-size:10px">Clear</button>
         </div>
         <pre class="log" id="log"></pre>
         <!-- Hidden elements for compatibility -->
@@ -1154,18 +1335,18 @@ class DashboardPanel {
     <!-- Settings Overlay -->
     <div class="overlay" id="settingsOverlay" aria-hidden="true">
       <div class="overlayBackdrop" data-close="settings"></div>
-      <div class="drawer" role="dialog" aria-modal="true" aria-label="设置">
+      <div class="drawer" role="dialog" aria-modal="true" aria-label="Settings">
         <div class="drawerHeader">
-          <h2>设置</h2>
-          <button class="btn secondary" id="settingsClose" type="button">关闭</button>
+          <h2>Settings</h2>
+          <button class="btn secondary" id="settingsClose" type="button">Close</button>
         </div>
         <div class="drawerBody">
           <!-- Settings Content (Simplified) -->
           <div class="row cols2">
-            <label>保存位置 <select id="configTarget"><option value="workspace">工作区</option><option value="global">全局</option></select></label>
+            <label>Save to <select id="configTarget"><option value="workspace">Workspace</option><option value="global">Global</option></select></label>
             <div class="inline" style="justify-content:flex-end; align-self:end">
-              <button class="btn secondary" id="reload" type="button">重载</button>
-              <button class="btn" id="save" type="button">保存</button>
+              <button class="btn secondary" id="reload" type="button">Reload</button>
+              <button class="btn" id="save" type="button">Save</button>
             </div>
           </div>
           
@@ -1180,8 +1361,8 @@ class DashboardPanel {
           </div>
 
           <div class="inline">
-            <label class="toggle"><input id="showKey" type="checkbox" /> 显示 Key</label>
-            <button class="btn secondary" data-action="testConnection" type="button" style="margin-left:auto">测试连接</button>
+            <label class="toggle"><input id="showKey" type="checkbox" /> Show key</label>
+            <button class="btn secondary" data-action="testConnection" type="button" style="margin-left:auto">Test connection</button>
           </div>
 
           <hr style="border:0; border-top:1px solid var(--border); width:100%; margin:8px 0" />
@@ -1200,7 +1381,7 @@ class DashboardPanel {
           
           <hr style="border:0; border-top:1px solid var(--border); width:100%; margin:8px 0" />
           
-          <button class="btn secondary" id="openSettings" type="button">打开 VS Code Settings UI</button>
+          <button class="btn secondary" id="openSettings" type="button">Open VS Code Settings UI</button>
         </div>
       </div>
     </div>

@@ -8,9 +8,13 @@
   // --- DOM Elements ---
   const statusWorkspace = document.getElementById('status-workspace');
   const statusStage = document.getElementById('status-stage');
+  const statusLocal = document.getElementById('status-local');
+  const statusRemote = document.getElementById('status-remote');
   const commitInput = document.getElementById('commit-message-input');
   const logPre = document.getElementById('log');
   const statusText = document.getElementById('statusText');
+  const branchList = document.getElementById('branchList');
+  const stepNodes = Array.from(document.querySelectorAll('.node[data-step]'));
 
   // Settings Elements
   const settingsOverlay = document.getElementById('settingsOverlay');
@@ -56,11 +60,14 @@
       case 'toast':
         showToast(message.message, message.level);
         break;
+      case 'branches':
+        updateBranches(message.current, message.branches);
+        break;
       case 'runState':
         isRunning = message.state === 'running';
         updateLoadingState(isRunning);
         if (statusText) {
-            statusText.textContent = isRunning ? '运行中...' : '空闲';
+            statusText.textContent = isRunning ? 'Running...' : 'Idle';
             statusText.className = 'node-status ' + (isRunning ? 'warning' : 'success');
         }
         break;
@@ -144,7 +151,7 @@
           // Or ask extension to reload? The extension sends initial config on load.
           // Since we don't have a 'reloadConfig' command, we just re-apply what we have or maybe we should have one.
           // For now, let's just show a toast.
-          showToast('已重置为初始加载状态', 'info');
+          showToast('Reset to the initial state.', 'info');
       });
   }
   
@@ -207,29 +214,104 @@
     }
   }
 
-  function updateStatusNodes(content) {
-      const lines = content.split('\n');
-      let stagedCount = 0;
-      let modifiedCount = 0;
-      let untrackedCount = 0;
-      
-      lines.forEach(line => {
-          const lower = line.toLowerCase();
-          if (lower.startsWith('staged:')) stagedCount = parseInt(line.split(':')[1]) || 0;
-          if (lower.startsWith('modified:')) modifiedCount = parseInt(line.split(':')[1]) || 0;
-          if (lower.startsWith('untracked:')) untrackedCount = parseInt(line.split(':')[1]) || 0;
+  function updateBranches(current, branches) {
+    if (!branchList || !Array.isArray(branches)) return;
+
+    branchList.textContent = '';
+    branches.forEach((b) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'branch-chip' + (b === current ? ' is-active' : '');
+      btn.textContent = b;
+      btn.addEventListener('click', () => {
+        if (isRunning) return;
+        if (b === current) return;
+        vscode.postMessage({ type: 'runAction', action: 'checkoutBranch', payload: { branch: b } });
       });
+      branchList.appendChild(btn);
+    });
+  }
+
+  function updateStatusNodes(content) {
+      const s = parseStatusText(content);
+      const stagedCount = s.staged;
+      const modifiedCount = s.modified;
+      const untrackedCount = s.untracked;
 
       if (statusWorkspace) {
           const total = modifiedCount + untrackedCount;
-          statusWorkspace.textContent = total > 0 ? `${total} 个文件待暂存` : '无改动';
+          statusWorkspace.textContent = total > 0 ? `${total} to stage` : 'No changes';
           statusWorkspace.className = 'node-status ' + (total > 0 ? 'warning' : 'success');
       }
 
       if (statusStage) {
-          statusStage.textContent = stagedCount > 0 ? `${stagedCount} 个文件待提交` : '空';
+          statusStage.textContent = stagedCount > 0 ? `${stagedCount} staged` : 'Empty';
           statusStage.className = 'node-status ' + (stagedCount > 0 ? 'warning' : 'success');
       }
+
+      if (statusLocal) {
+        if (s.ahead > 0) {
+          statusLocal.textContent = `Ahead ${s.ahead}`;
+          statusLocal.className = 'node-status warning';
+        } else {
+          statusLocal.textContent = 'Synced';
+          statusLocal.className = 'node-status success';
+        }
+      }
+
+      if (statusRemote) {
+        if (s.ahead > 0) {
+          statusRemote.textContent = `Push ${s.ahead}`;
+          statusRemote.className = 'node-status warning';
+        } else if (s.behind > 0) {
+          statusRemote.textContent = `Pull ${s.behind}`;
+          statusRemote.className = 'node-status warning';
+        } else {
+          statusRemote.textContent = 'Synced';
+          statusRemote.className = 'node-status success';
+        }
+      }
+
+      setActiveStep(pickActiveStep(s));
+  }
+
+  function parseStatusText(content) {
+    const out = { branch: '', tracking: '', ahead: 0, behind: 0, staged: 0, modified: 0, untracked: 0 };
+    if (!content) return out;
+    const lines = String(content).split('\n');
+    lines.forEach((line) => {
+      const lower = line.toLowerCase();
+      if (lower.startsWith('branch:')) {
+        const raw = line.slice(line.indexOf(':') + 1).trim();
+        const m = raw.match(/^(\S+)(?:\s*\(([^)]+)\))?(?:\s+ahead:(\d+))?(?:\s+behind:(\d+))?/);
+        if (m) {
+          out.branch = m[1] || '';
+          out.tracking = m[2] || '';
+          out.ahead = m[3] ? parseInt(m[3], 10) || 0 : 0;
+          out.behind = m[4] ? parseInt(m[4], 10) || 0 : 0;
+        }
+      }
+      if (lower.startsWith('staged:')) out.staged = parseInt(line.split(':')[1], 10) || 0;
+      if (lower.startsWith('modified:')) out.modified = parseInt(line.split(':')[1], 10) || 0;
+      if (lower.startsWith('untracked:')) out.untracked = parseInt(line.split(':')[1], 10) || 0;
+    });
+    return out;
+  }
+
+  function pickActiveStep(s) {
+    const workingCount = (s.modified || 0) + (s.untracked || 0);
+    if (workingCount > 0) return 'working';
+    if ((s.staged || 0) > 0) return 'staging';
+    if ((s.ahead || 0) > 0) return 'local';
+    if ((s.behind || 0) > 0) return 'remote';
+    return 'local';
+  }
+
+  function setActiveStep(step) {
+    if (!stepNodes.length) return;
+    stepNodes.forEach((el) => {
+      el.classList.toggle('is-active', el.dataset.step === step);
+    });
   }
 
   function updateLoadingState(loading) {
@@ -259,7 +341,7 @@
       
       if (!toast) return;
       
-      title.textContent = level === 'error' ? 'Error' : 'Success';
+      title.textContent = level === 'error' ? 'Error' : level === 'info' ? 'Info' : 'Success';
       body.textContent = message;
       
       dot.className = 'dot ' + (level === 'error' ? 'bad' : 'ok');
