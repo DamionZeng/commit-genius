@@ -10,6 +10,9 @@
   const statusStage = document.getElementById('status-stage');
   const statusLocal = document.getElementById('status-local');
   const statusRemote = document.getElementById('status-remote');
+  const badgeWorking = document.getElementById('badge-working');
+  const badgeStaged = document.getElementById('badge-staged');
+  const workingFileList = document.getElementById('workingFileList');
   const commitInput = document.getElementById('commit-message-input');
   const logPre = document.getElementById('log');
   const statusText = document.getElementById('statusText');
@@ -62,6 +65,9 @@
         break;
       case 'branches':
         updateBranches(message.current, message.branches);
+        break;
+      case 'workingFiles':
+        renderWorkingFiles(message.files);
         break;
       case 'runState':
         isRunning = message.state === 'running';
@@ -232,6 +238,74 @@
     });
   }
 
+  function renderWorkingFiles(files) {
+    const safeFiles = Array.isArray(files) ? files : [];
+    const count = safeFiles.length;
+
+    if (badgeWorking) {
+      if (count > 0) {
+        badgeWorking.textContent = String(count);
+        badgeWorking.classList.add('show');
+      } else {
+        badgeWorking.textContent = '';
+        badgeWorking.classList.remove('show');
+      }
+    }
+
+    if (!workingFileList) return;
+    workingFileList.textContent = '';
+
+    if (count === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No changes';
+      empty.style.color = 'var(--muted)';
+      empty.style.fontSize = '12px';
+      empty.style.padding = '4px 2px';
+      workingFileList.appendChild(empty);
+      return;
+    }
+
+    safeFiles
+      .slice(0, 200)
+      .sort((a, b) => String(a.path || '').localeCompare(String(b.path || '')))
+      .forEach((f) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'file-item';
+        const filePath = String(f.path || '');
+        const kind = String(f.kind || 'other');
+        const kindShort =
+          kind === 'modified'
+            ? 'M'
+            : kind === 'untracked'
+              ? 'U'
+              : kind === 'deleted'
+                ? 'D'
+                : kind === 'renamed'
+                  ? 'R'
+                  : 'O';
+
+        const pathSpan = document.createElement('span');
+        pathSpan.className = 'file-path';
+        pathSpan.textContent = filePath;
+
+        const kindSpan = document.createElement('span');
+        kindSpan.className = 'file-kind';
+        kindSpan.textContent = kindShort;
+
+        btn.appendChild(pathSpan);
+        btn.appendChild(kindSpan);
+
+        btn.addEventListener('click', () => {
+          if (isRunning) return;
+          if (!filePath) return;
+          vscode.postMessage({ type: 'runAction', action: 'openDiff', payload: { path: filePath, kind } });
+        });
+
+        workingFileList.appendChild(btn);
+      });
+  }
+
   function updateStatusNodes(content) {
       const s = parseStatusText(content);
       const stagedCount = s.staged;
@@ -245,8 +319,18 @@
       }
 
       if (statusStage) {
-          statusStage.textContent = stagedCount > 0 ? `${stagedCount} staged` : 'Empty';
+          statusStage.textContent = stagedCount > 0 ? 'Staged' : 'Empty';
           statusStage.className = 'node-status ' + (stagedCount > 0 ? 'warning' : 'success');
+      }
+      
+      if (badgeStaged) {
+        if (stagedCount > 0) {
+          badgeStaged.textContent = String(stagedCount);
+          badgeStaged.classList.add('show');
+        } else {
+          badgeStaged.textContent = '';
+          badgeStaged.classList.remove('show');
+        }
       }
 
       if (statusLocal) {
@@ -300,8 +384,8 @@
 
   function pickActiveStep(s) {
     const workingCount = (s.modified || 0) + (s.untracked || 0);
-    if (workingCount > 0) return 'working';
     if ((s.staged || 0) > 0) return 'staging';
+    if (workingCount > 0) return 'working';
     if ((s.ahead || 0) > 0) return 'local';
     if ((s.behind || 0) > 0) return 'remote';
     return 'local';

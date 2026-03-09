@@ -39,6 +39,7 @@ type DashboardAction =
   | 'openSettings'
   | 'gitStatus'
   | 'checkoutBranch'
+  | 'openDiff'
   | 'stageAll'
   | 'unstageAll'
   | 'commitGenerated'
@@ -69,6 +70,7 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       action === 'openSettings' ||
       action === 'gitStatus' ||
       action === 'checkoutBranch' ||
+      action === 'openDiff' ||
       action === 'stageAll' ||
       action === 'unstageAll' ||
       action === 'commitGenerated' ||
@@ -104,6 +106,29 @@ function getNonce(): string {
   return text;
 }
 
+class GitRefContentProvider implements vscode.TextDocumentContentProvider {
+  async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+    try {
+      const q = new URLSearchParams(uri.query);
+      const ref = q.get('ref') || 'HEAD';
+      const rel = q.get('path') || '';
+      const root = getWorkspaceRoot();
+      const git = createGit(root);
+      const posixPath = rel.replace(/\\/g, '/');
+      const out = await git.raw(['show', `${ref}:${posixPath}`]);
+      return out ?? '';
+    } catch {
+      return '';
+    }
+  }
+}
+
+class EmptyContentProvider implements vscode.TextDocumentContentProvider {
+  provideTextDocumentContent(): string {
+    return '';
+  }
+}
+
 function getInitialConfig() {
   const c = vscode.workspace.getConfiguration('commitGenius');
   return {
@@ -129,6 +154,10 @@ type PanelToWebviewMessage =
   | { type: 'runState'; state: 'running' | 'idle'; action?: DashboardAction; durationMs?: number }
   | { type: 'log'; level: LogLevel; message: string }
   | { type: 'branches'; current: string; branches: string[] }
+  | {
+      type: 'workingFiles';
+      files: Array<{ path: string; kind: 'modified' | 'untracked' | 'deleted' | 'renamed' | 'other' }>;
+    }
   | { type: 'result'; action: DashboardAction; title: string; content: string };
 
 type PrJson = { title: string; body: string };
@@ -324,6 +353,26 @@ class DashboardPanel {
         await this.post({ type: 'branches', current: b.current, branches: b.all });
       };
 
+      const renderWorkingFiles = async (): Promise<void> => {
+        const s = await git.status();
+        const files = (s.files ?? [])
+          .filter((f) => f.working_dir && f.working_dir !== ' ')
+          .slice(0, 200)
+          .map((f) => {
+            const pathText = String(f.path || '');
+            const wd = String(f.working_dir || '');
+            const idx = String(f.index || '');
+            let kind: 'modified' | 'untracked' | 'deleted' | 'renamed' | 'other' = 'other';
+            if (idx === '?' || wd === '?') kind = 'untracked';
+            else if (wd === 'D') kind = 'deleted';
+            else if (wd === 'R') kind = 'renamed';
+            else if (wd !== ' ') kind = 'modified';
+            return { path: pathText, kind };
+          })
+          .filter((f) => f.path);
+        await this.post({ type: 'workingFiles', files });
+      };
+
       const confirm = async (message: string, confirmLabel: string): Promise<boolean> => {
         const picked = await vscode.window.showWarningMessage(message, { modal: true }, confirmLabel);
         return picked === confirmLabel;
@@ -348,6 +397,7 @@ class DashboardPanel {
       if (action === 'gitStatus') {
         const content = await renderStatus();
         await renderBranches();
+        await renderWorkingFiles();
         await this.post({ type: 'result', action, title: 'Git Status', content });
         await this.post({ type: 'toast', level: 'success', message: 'Git status refreshed.' });
         return;
@@ -362,13 +412,59 @@ class DashboardPanel {
         await checkoutLocalBranch(git, payload.branch);
         const content = await renderStatus();
         await renderBranches();
+        await renderWorkingFiles();
         await this.post({ type: 'result', action: 'gitStatus', title: 'Git Status', content });
         await this.post({ type: 'toast', level: 'success', message: `Switched to branch: ${payload.branch}` });
         return;
       }
 
+      if (action === 'openDiff') {
+        if (!isRecord(payload) || typeof payload.path !== 'string' || typeof payload.kind !== 'string') {
+          await this.post({ type: 'toast', level: 'error', message: 'Missing diff parameters.' });
+          return;
+        }
+
+        const relPath = payload.path.trim();
+        if (!relPath) {
+          await this.post({ type: 'toast', level: 'error', message: 'Invalid file path.' });
+          return;
+        }
+
+        const abs = path.resolve(root, relPath);
+        const rightFile = vscode.Uri.file(abs);
+
+        const makeGitUri = (ref: string): vscode.Uri => {
+          const q = new URLSearchParams({ ref, path: relPath }).toString();
+          return vscode.Uri.parse(`commit-genius-git:/${encodeURIComponent(relPath)}?${q}`);
+        };
+        const emptyUri = vscode.Uri.parse(`commit-genius-empty:/${encodeURIComponent(relPath)}`);
+
+        const kind = payload.kind;
+
+        let left = makeGitUri('HEAD');
+        let right = rightFile;
+        let title = `Diff: ${relPath}`;
+
+        if (kind === 'untracked') {
+          left = emptyUri;
+          right = rightFile;
+          title = `Diff (untracked): ${relPath}`;
+        } else if (kind === 'deleted') {
+          left = makeGitUri('HEAD');
+          right = emptyUri;
+          title = `Diff (deleted): ${relPath}`;
+        } else {
+          left = makeGitUri('HEAD');
+          right = rightFile;
+        }
+
+        await vscode.commands.executeCommand('vscode.diff', left, right, title);
+        return;
+      }
+
       if (action === 'stageAll') {
         await stageAll(git);
+        await renderWorkingFiles();
         await this.post({ type: 'result', action, title: 'Staged all changes', content: await renderStatus() });
         await this.post({ type: 'toast', level: 'success', message: 'All changes staged.' });
         return;
@@ -376,6 +472,7 @@ class DashboardPanel {
 
       if (action === 'unstageAll') {
         await unstageAll(git);
+        await renderWorkingFiles();
         await this.post({ type: 'result', action, title: 'Unstaged changes', content: await renderStatus() });
         await this.post({ type: 'toast', level: 'success', message: 'Unstaged.' });
         return;
@@ -902,6 +999,83 @@ class DashboardPanel {
         height: 100%;
       }
 
+      .count-badge {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 6px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--focus) 22%, transparent);
+        border: 1px solid color-mix(in srgb, var(--focus) 75%, transparent);
+        color: var(--fg);
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 18px;
+      }
+      .count-badge.show { display: inline-flex; }
+
+      .file-list {
+        border-top: 1px solid var(--border);
+        padding-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        height: 160px;
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+      .file-list::-webkit-scrollbar { width: 4px; height: 4px; }
+      .file-list::-webkit-scrollbar-track { background: transparent; }
+      .file-list::-webkit-scrollbar-thumb {
+        background: color-mix(in srgb, var(--fg) 22%, transparent);
+        border-radius: 999px;
+      }
+      .file-list::-webkit-scrollbar-thumb:hover {
+        background: color-mix(in srgb, var(--fg) 32%, transparent);
+      }
+      .file-item {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bg) 65%, transparent);
+        color: var(--fg);
+        border-radius: 10px;
+        padding: 8px 10px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        text-align: left;
+        width: 100%;
+        min-width: 0;
+      }
+      .file-item:hover {
+        border-color: color-mix(in srgb, var(--focus) 60%, transparent);
+        background: color-mix(in srgb, var(--bg) 78%, transparent);
+      }
+      .file-path {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      .file-kind {
+        font-size: 10px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        background: transparent;
+        border-radius: 999px;
+        padding: 2px 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
       .node.is-active {
         border-color: color-mix(in srgb, var(--focus) 90%, transparent);
         box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 45%, transparent), 0 10px 30px rgba(0,0,0,0.12);
@@ -938,6 +1112,10 @@ class DashboardPanel {
         font-size: 14px;
         font-weight: 600;
         flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       
       .node-status {
@@ -960,7 +1138,14 @@ class DashboardPanel {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
-        margin-top: 4px;
+        margin-top: auto;
+      }
+      
+      .node-content {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
       }
 
       @media (max-width: 900px) {
@@ -975,7 +1160,8 @@ class DashboardPanel {
       /* AI Input Area */
       textarea.ai-input {
         width: 100%;
-        min-height: 80px;
+        min-height: 120px;
+        flex: 1;
         background: var(--input-bg);
         border: 1px solid var(--input-border);
         color: var(--input-fg);
@@ -1187,6 +1373,7 @@ class DashboardPanel {
         <div class="flow-row" aria-label="Git workflow">
           <div class="flow-step">
             <div class="node" data-step="working">
+              <div class="count-badge" id="badge-working" aria-label="Working directory file count"></div>
               <div class="node-header">
                 <div class="node-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1195,8 +1382,8 @@ class DashboardPanel {
                   </svg>
                 </div>
                 <div class="node-title">Working Directory</div>
-                <div class="node-status" id="status-workspace">Checking...</div>
               </div>
+              <div class="file-list" id="workingFileList" role="list" aria-label="Working directory files"></div>
               <div class="node-actions">
                 <button class="btn" data-action="stageAll">Stage all</button>
               </div>
@@ -1207,6 +1394,7 @@ class DashboardPanel {
 
           <div class="flow-step">
             <div class="node" data-step="staging">
+              <div class="count-badge" id="badge-staged" aria-label="Staging area file count"></div>
               <div class="node-header">
                 <div class="node-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1239,7 +1427,6 @@ class DashboardPanel {
                 </div>
                 <div class="node-title">
                   Local Repo
-                  <span class="ai-badge">AI Powered</span>
                 </div>
                 <div class="node-status" id="status-local">—</div>
               </div>
@@ -1249,7 +1436,6 @@ class DashboardPanel {
               <div class="node-actions">
                 <button class="btn" data-action="commitMessage">Generate</button>
                 <button class="btn" data-action="commitGenerated">Commit</button>
-                <button class="btn secondary" data-action="amendGenerated">Amend</button>
               </div>
             </div>
           </div>
@@ -1271,8 +1457,6 @@ class DashboardPanel {
               </div>
               <div class="node-actions">
                 <button class="btn" data-action="push">Push</button>
-                <button class="btn danger" data-action="revert">Revert</button>
-                <button class="btn danger" data-action="reset">Reset</button>
               </div>
             </div>
           </div>
@@ -1395,6 +1579,8 @@ class DashboardPanel {
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider('commit-genius-git', new GitRefContentProvider()),
+    vscode.workspace.registerTextDocumentContentProvider('commit-genius-empty', new EmptyContentProvider()),
     vscode.commands.registerCommand('commitGenius.generateCommitMessage', generateCommitMessageCommand),
     vscode.commands.registerCommand('commitGenius.generateChangelog', generateChangelogCommand),
     vscode.commands.registerCommand('commitGenius.generatePrDescription', generatePrDescriptionCommand),
