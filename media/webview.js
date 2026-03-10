@@ -106,6 +106,12 @@
     });
   });
 
+  document.getElementById('commitExpand')?.addEventListener('click', () => {
+    if (isRunning) return;
+    const message = commitInput ? String(commitInput.value || '') : '';
+    vscode.postMessage({ type: 'runAction', action: 'openCommitEditor', payload: { message } });
+  });
+
   // 3. Settings Overlay
   if (openSettingsPanelBtn) {
     openSettingsPanelBtn.addEventListener('click', () => {
@@ -210,7 +216,7 @@
         updateStatusNodes(message.content);
     } else if (message.action === 'stageAll' || message.action === 'unstageAll') {
         if (message.content) updateStatusNodes(message.content);
-    } else if (message.action === 'push' || message.action === 'commitGenerated' || message.action === 'amendGenerated' || message.action === 'revert' || message.action === 'reset') {
+    } else if (message.action === 'push' || message.action === 'pull' || message.action === 'commitGenerated' || message.action === 'amendGenerated' || message.action === 'revert' || message.action === 'reset') {
          if (message.content && message.content.includes('branch:')) {
              updateStatusNodes(message.content);
          }
@@ -335,7 +341,7 @@
 
       if (statusLocal) {
         if (s.ahead > 0) {
-          statusLocal.textContent = `Ahead ${s.ahead}`;
+          statusLocal.textContent = `Push ${s.ahead}`;
           statusLocal.className = 'node-status warning';
         } else {
           statusLocal.textContent = 'Synced';
@@ -344,10 +350,7 @@
       }
 
       if (statusRemote) {
-        if (s.ahead > 0) {
-          statusRemote.textContent = `Push ${s.ahead}`;
-          statusRemote.className = 'node-status warning';
-        } else if (s.behind > 0) {
+        if (s.behind > 0) {
           statusRemote.textContent = `Pull ${s.behind}`;
           statusRemote.className = 'node-status warning';
         } else {

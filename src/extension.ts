@@ -20,6 +20,7 @@ import {
   getLocalBranches,
   getRecentCommits,
   getStatusSummary,
+  pullCurrentBranch,
   pushCurrentBranch,
   resetTo,
   revertCommit,
@@ -45,6 +46,8 @@ type DashboardAction =
   | 'commitGenerated'
   | 'amendGenerated'
   | 'push'
+  | 'pull'
+  | 'openCommitEditor'
   | 'revert'
   | 'reset';
 
@@ -76,6 +79,8 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       action === 'commitGenerated' ||
       action === 'amendGenerated' ||
       action === 'push' ||
+      action === 'pull' ||
+      action === 'openCommitEditor' ||
       action === 'revert' ||
       action === 'reset'
     ) {
@@ -173,14 +178,23 @@ class DashboardPanel {
   static current?: DashboardPanel;
 
   private abortController?: AbortController;
+  private commitEditorPanel?: vscode.WebviewPanel;
+  private readonly webviewPanels = new Set<vscode.WebviewPanel>();
 
   private constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly panel: vscode.WebviewPanel
   ) {
+    this.webviewPanels.add(panel);
+
     panel.onDidDispose(() => {
       try {
         this.abortController?.abort();
+      } catch (err) {
+        void err;
+      }
+      try {
+        this.commitEditorPanel?.dispose();
       } catch (err) {
         void err;
       }
@@ -225,10 +239,12 @@ class DashboardPanel {
   }
 
   private async post(message: PanelToWebviewMessage): Promise<void> {
-    try {
-      await this.panel.webview.postMessage(message);
-    } catch (err) {
-      void err;
+    for (const panel of this.webviewPanels) {
+      try {
+        await panel.webview.postMessage(message);
+      } catch (err) {
+        void err;
+      }
     }
   }
 
@@ -298,6 +314,13 @@ class DashboardPanel {
   }
 
   private async runAction(action: DashboardAction, payload?: unknown): Promise<void> {
+    if (action === 'openCommitEditor') {
+      const initialMessage =
+        isRecord(payload) && typeof payload.message === 'string' ? payload.message : '';
+      this.openCommitEditor(initialMessage);
+      return;
+    }
+
     if (this.abortController) {
       await this.post({
         type: 'toast',
@@ -635,6 +658,19 @@ class DashboardPanel {
         await pushCurrentBranch(git);
         await this.post({ type: 'result', action, title: 'Pushed', content: await renderStatus() });
         await this.post({ type: 'toast', level: 'success', message: 'Pushed.' });
+        return;
+      }
+
+      if (action === 'pull') {
+        const ok = await confirm('Pull the current branch from origin?', 'Pull');
+        if (!ok) {
+          await this.post({ type: 'toast', level: 'success', message: 'Pull cancelled.' });
+          return;
+        }
+
+        await pullCurrentBranch(git);
+        await this.post({ type: 'result', action, title: 'Pulled', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Pulled.' });
         return;
       }
 
@@ -1173,6 +1209,29 @@ class DashboardPanel {
         transition: border-color 0.2s;
         margin-bottom: 8px;
       }
+
+      .textarea-wrap {
+        position: relative;
+        display: flex;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .expand-btn {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        padding: 4px 6px;
+        font-size: 11px;
+        border-radius: 6px;
+        opacity: 0.9;
+      }
+
+      .actions-row {
+        display: flex;
+        gap: 8px;
+        width: 100%;
+      }
       
       textarea.ai-input:focus {
         border-color: var(--focus);
@@ -1385,7 +1444,7 @@ class DashboardPanel {
               </div>
               <div class="file-list" id="workingFileList" role="list" aria-label="Working directory files"></div>
               <div class="node-actions">
-                <button class="btn" data-action="stageAll">Stage all</button>
+                <button class="btn" data-action="stageAll">Stage</button>
               </div>
             </div>
           </div>
@@ -1406,8 +1465,27 @@ class DashboardPanel {
                 <div class="node-title">Staging Area</div>
                 <div class="node-status" id="status-stage">Empty</div>
               </div>
+              <div class="node-content">
+                <div class="textarea-wrap">
+                  <textarea id="commit-message-input" class="ai-input" placeholder="Write a commit message, or generate one with AI..."></textarea>
+                  <button class="btn secondary expand-btn" id="commitExpand" type="button" aria-label="Expand commit message">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:12px; height:12px">
+                      <path d="M15 3h6v6"></path>
+                      <path d="M9 21H3v-6"></path>
+                      <path d="M21 3l-7 7"></path>
+                      <path d="M3 21l7-7"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
               <div class="node-actions">
-                <button class="btn secondary" data-action="unstageAll">Unstage all</button>
+                <div class="actions-row">
+                  <button class="btn" data-action="commitMessage">Generate</button>
+                </div>
+                <div class="actions-row">
+                  <button class="btn secondary" data-action="unstageAll">Unstage</button>
+                  <button class="btn" data-action="commitGenerated">Commit</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1430,12 +1508,8 @@ class DashboardPanel {
                 </div>
                 <div class="node-status" id="status-local">—</div>
               </div>
-              <div class="node-content">
-                <textarea id="commit-message-input" class="ai-input" placeholder="Write a commit message, or generate one with AI..."></textarea>
-              </div>
               <div class="node-actions">
-                <button class="btn" data-action="commitMessage">Generate</button>
-                <button class="btn" data-action="commitGenerated">Commit</button>
+                <button class="btn" data-action="push">Push</button>
               </div>
             </div>
           </div>
@@ -1456,7 +1530,7 @@ class DashboardPanel {
                 <div class="node-status" id="status-remote">—</div>
               </div>
               <div class="node-actions">
-                <button class="btn" data-action="push">Push</button>
+                <button class="btn" data-action="pull">Pull</button>
               </div>
             </div>
           </div>
@@ -1567,6 +1641,140 @@ class DashboardPanel {
           
           <button class="btn secondary" id="openSettings" type="button">Open VS Code Settings UI</button>
         </div>
+      </div>
+    </div>
+
+    <textarea id="initialJson" style="display:none">${initialJson}</textarea>
+    <script nonce="${nonce}" src="${scriptUri.toString()}"></script>
+  </body>
+</html>`;
+  }
+
+  private openCommitEditor(initialMessage: string): void {
+    if (this.commitEditorPanel) {
+      this.commitEditorPanel.reveal(vscode.ViewColumn.Active);
+      try {
+        void this.commitEditorPanel.webview.postMessage({
+          type: 'result',
+          action: 'commitMessage',
+          title: 'Commit Message',
+          content: initialMessage
+        } satisfies PanelToWebviewMessage);
+      } catch (err) {
+        void err;
+      }
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      'commitGenius.commitEditor',
+      'Commit Message',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this.context.extensionUri, vscode.Uri.joinPath(this.context.extensionUri, 'media')]
+      }
+    );
+
+    try {
+      panel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [this.context.extensionUri, vscode.Uri.joinPath(this.context.extensionUri, 'media')]
+      };
+    } catch (err) {
+      void err;
+    }
+
+    this.commitEditorPanel = panel;
+    this.webviewPanels.add(panel);
+
+    panel.onDidDispose(() => {
+      this.webviewPanels.delete(panel);
+      if (this.commitEditorPanel === panel) this.commitEditorPanel = undefined;
+    });
+
+    panel.webview.onDidReceiveMessage((raw) => this.onMessage(raw));
+    panel.webview.html = this.getCommitEditorHtml(panel.webview, initialMessage);
+  }
+
+  private getCommitEditorHtml(webview: vscode.Webview, initialMessage: string): string {
+    const nonce = getNonce();
+    const initial = getInitialConfig();
+    const initialJson = JSON.stringify(initial).replace(/</g, '\\u003c');
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'webview.js'));
+    const safeMessage = initialMessage
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};" />
+    <title>Commit Message</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: var(--vscode-editor-background);
+        --fg: var(--vscode-foreground);
+        --muted: var(--vscode-descriptionForeground);
+        --border: color-mix(in srgb, var(--vscode-panel-border) 55%, transparent);
+        --input-bg: var(--vscode-input-background);
+        --input-fg: var(--vscode-input-foreground);
+        --input-border: var(--vscode-input-border);
+        --focus: var(--vscode-focusBorder);
+        --accent: var(--vscode-button-background);
+        --accent-fg: var(--vscode-button-foreground);
+        --accent-hover: var(--vscode-button-hoverBackground);
+      }
+
+      body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family); }
+      .wrap { padding: 16px; display: flex; flex-direction: column; gap: 12px; height: 100vh; box-sizing: border-box; }
+      h1 { font-size: 14px; margin: 0; font-weight: 600; }
+      textarea.ai-input {
+        width: 100%;
+        flex: 1;
+        min-height: 320px;
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        color: var(--input-fg);
+        border-radius: 8px;
+        padding: 10px;
+        font-family: var(--vscode-editor-font-family);
+        font-size: 12px;
+        resize: both;
+        outline: none;
+        box-sizing: border-box;
+      }
+      textarea.ai-input:focus { border-color: var(--focus); }
+      .btn {
+        appearance: none;
+        border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .btn:hover { background: var(--accent-hover); }
+      .actions { display: flex; gap: 8px; align-items: center; }
+      .hint { font-size: 11px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px">
+        <h1>Commit Message</h1>
+        <div class="hint">Generate uses your configured diff scope</div>
+      </div>
+      <textarea id="commit-message-input" class="ai-input" placeholder="Write a commit message, or generate one with AI...">${safeMessage}</textarea>
+      <div class="actions">
+        <button class="btn" data-action="commitMessage" type="button">Generate</button>
       </div>
     </div>
 

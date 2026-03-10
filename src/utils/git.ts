@@ -107,6 +107,11 @@ export async function pushCurrentBranch(git: SimpleGit): Promise<void> {
   await git.push('origin', branch);
 }
 
+export async function pullCurrentBranch(git: SimpleGit): Promise<void> {
+  const branch = await getHeadBranch(git);
+  await git.pull('origin', branch);
+}
+
 export async function revertCommit(git: SimpleGit, hash: string): Promise<void> {
   const h = hash.trim();
   if (!h) throw new Error('需要提供要 revert 的 commit hash。');
