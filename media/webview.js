@@ -4,6 +4,8 @@
   // --- State ---
   let isRunning = false;
   let config = {};
+  let lastWorkingFiles = [];
+  const selectedWorkingPaths = new Set();
 
   // --- DOM Elements ---
   const statusWorkspace = document.getElementById('status-workspace');
@@ -18,6 +20,10 @@
   const statusText = document.getElementById('statusText');
   const branchList = document.getElementById('branchList');
   const stepNodes = Array.from(document.querySelectorAll('.node[data-step]'));
+
+  if (statusWorkspace) {
+    statusWorkspace.style.display = 'none';
+  }
 
   // Settings Elements
   const settingsOverlay = document.getElementById('settingsOverlay');
@@ -100,6 +106,12 @@
                   payload = { message };
               }
           }
+      } else if (action === 'stageFiles') {
+          const targets = pickTargetWorkingFiles();
+          payload = { paths: targets.map((f) => f.path) };
+      } else if (action === 'checkoutFiles') {
+          const targets = pickTargetWorkingFiles();
+          payload = { files: targets.map((f) => ({ path: f.path, kind: f.kind })) };
       }
       
       vscode.postMessage({ type: 'runAction', action, payload });
@@ -214,8 +226,11 @@
       }
     } else if (message.action === 'gitStatus') {
         updateStatusNodes(message.content);
-    } else if (message.action === 'stageAll' || message.action === 'unstageAll') {
+    } else if (message.action === 'stageAll' || message.action === 'unstageAll' || message.action === 'stageFiles' || message.action === 'checkoutFiles') {
         if (message.content) updateStatusNodes(message.content);
+        if (message.action === 'stageFiles' || message.action === 'checkoutFiles') {
+          clearWorkingSelection();
+        }
     } else if (message.action === 'push' || message.action === 'pull' || message.action === 'commitGenerated' || message.action === 'amendGenerated' || message.action === 'revert' || message.action === 'reset') {
          if (message.content && message.content.includes('branch:')) {
              updateStatusNodes(message.content);
@@ -224,6 +239,17 @@
              commitInput.value = '';
          }
     }
+  }
+
+  function clearWorkingSelection() {
+    selectedWorkingPaths.clear();
+    if (!workingFileList) return;
+    workingFileList.querySelectorAll('.file-select').forEach((el) => {
+      el.checked = false;
+    });
+    workingFileList.querySelectorAll('.file-row').forEach((el) => {
+      el.classList.remove('is-selected');
+    });
   }
 
   function updateBranches(current, branches) {
@@ -246,7 +272,17 @@
 
   function renderWorkingFiles(files) {
     const safeFiles = Array.isArray(files) ? files : [];
-    const count = safeFiles.length;
+    lastWorkingFiles = safeFiles
+      .map((f) => ({ path: String(f?.path || ''), kind: String(f?.kind || 'other') }))
+      .filter((f) => Boolean(f.path))
+      .slice(0, 200);
+
+    const present = new Set(lastWorkingFiles.map((f) => f.path));
+    Array.from(selectedWorkingPaths).forEach((p) => {
+      if (!present.has(p)) selectedWorkingPaths.delete(p);
+    });
+
+    const count = lastWorkingFiles.length;
 
     if (badgeWorking) {
       if (count > 0) {
@@ -260,6 +296,9 @@
 
     if (!workingFileList) return;
     workingFileList.textContent = '';
+    workingFileList.style.display = 'flex';
+    workingFileList.style.flexDirection = 'column';
+    workingFileList.style.alignItems = 'stretch';
 
     if (count === 0) {
       const empty = document.createElement('div');
@@ -271,15 +310,43 @@
       return;
     }
 
-    safeFiles
+    lastWorkingFiles
       .slice(0, 200)
       .sort((a, b) => String(a.path || '').localeCompare(String(b.path || '')))
       .forEach((f) => {
+        const filePath = String(f.path || '');
+        const kind = String(f.kind || 'other');
+
+        const row = document.createElement('div');
+        row.className = 'file-row' + (selectedWorkingPaths.has(filePath) ? ' is-selected' : '');
+        row.style.display = 'grid';
+        row.style.gridTemplateColumns = '14px 1fr';
+        row.style.alignItems = 'center';
+        row.style.columnGap = '8px';
+        row.style.width = '100%';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'file-select';
+        checkbox.style.margin = '0';
+        checkbox.style.width = '14px';
+        checkbox.style.height = '14px';
+        checkbox.checked = selectedWorkingPaths.has(filePath);
+        checkbox.addEventListener('change', () => {
+          if (checkbox.checked) selectedWorkingPaths.add(filePath);
+          else selectedWorkingPaths.delete(filePath);
+          row.classList.toggle('is-selected', checkbox.checked);
+        });
+
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'file-item';
-        const filePath = String(f.path || '');
-        const kind = String(f.kind || 'other');
+        btn.style.width = '100%';
+        btn.style.minWidth = '0';
+        btn.style.display = 'flex';
+        btn.style.alignItems = 'center';
+        btn.style.gap = '10px';
+        btn.style.textAlign = 'left';
         const kindShort =
           kind === 'modified'
             ? 'M'
@@ -294,10 +361,16 @@
         const pathSpan = document.createElement('span');
         pathSpan.className = 'file-path';
         pathSpan.textContent = filePath;
+        pathSpan.style.flex = '1';
+        pathSpan.style.minWidth = '0';
+        pathSpan.style.overflow = 'hidden';
+        pathSpan.style.textOverflow = 'ellipsis';
+        pathSpan.style.whiteSpace = 'nowrap';
 
         const kindSpan = document.createElement('span');
         kindSpan.className = 'file-kind';
         kindSpan.textContent = kindShort;
+        kindSpan.style.flex = '0 0 auto';
 
         btn.appendChild(pathSpan);
         btn.appendChild(kindSpan);
@@ -308,8 +381,16 @@
           vscode.postMessage({ type: 'runAction', action: 'openDiff', payload: { path: filePath, kind } });
         });
 
-        workingFileList.appendChild(btn);
+        row.appendChild(checkbox);
+        row.appendChild(btn);
+        workingFileList.appendChild(row);
       });
+  }
+
+  function pickTargetWorkingFiles() {
+    if (!Array.isArray(lastWorkingFiles) || lastWorkingFiles.length === 0) return [];
+    if (!selectedWorkingPaths.size) return lastWorkingFiles;
+    return lastWorkingFiles.filter((f) => selectedWorkingPaths.has(String(f.path || '')));
   }
 
   function updateStatusNodes(content) {

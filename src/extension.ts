@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { writeFile } from 'fs/promises';
+import { rm, writeFile } from 'fs/promises';
 import { getAdapter } from './adapters';
 import { generateCommitMessageCommand } from './commands/generateCommitMessage';
 import { generateChangelogCommand } from './commands/generateChangelog';
@@ -41,6 +41,8 @@ type DashboardAction =
   | 'gitStatus'
   | 'checkoutBranch'
   | 'openDiff'
+  | 'stageFiles'
+  | 'checkoutFiles'
   | 'stageAll'
   | 'unstageAll'
   | 'commitGenerated'
@@ -74,6 +76,8 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       action === 'gitStatus' ||
       action === 'checkoutBranch' ||
       action === 'openDiff' ||
+      action === 'stageFiles' ||
+      action === 'checkoutFiles' ||
       action === 'stageAll' ||
       action === 'unstageAll' ||
       action === 'commitGenerated' ||
@@ -482,6 +486,89 @@ class DashboardPanel {
         }
 
         await vscode.commands.executeCommand('vscode.diff', left, right, title);
+        return;
+      }
+
+      if (action === 'stageFiles') {
+        const rawPaths: unknown =
+          isRecord(payload) && Array.isArray(payload.paths)
+            ? (payload.paths as unknown[])
+            : isRecord(payload) && Array.isArray(payload.files)
+              ? (payload.files as unknown[])
+              : [];
+
+        const paths = (rawPaths as unknown[])
+          .map((p) => (typeof p === 'string' ? p : isRecord(p) && typeof p.path === 'string' ? p.path : ''))
+          .map((p) => p.trim())
+          .filter(Boolean)
+          .slice(0, 500);
+
+        if (paths.length === 0) {
+          await this.post({ type: 'toast', level: 'error', message: 'No file paths provided.' });
+          return;
+        }
+
+        const posixPaths = paths.map((p) => p.replace(/\\/g, '/'));
+        await git.raw(['add', '-A', '--', ...posixPaths]);
+        await renderWorkingFiles();
+        await this.post({ type: 'result', action, title: 'Staged selected files', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Staged.' });
+        return;
+      }
+
+      if (action === 'checkoutFiles') {
+        const rawFiles: unknown =
+          isRecord(payload) && Array.isArray(payload.files)
+            ? (payload.files as unknown[])
+            : isRecord(payload) && Array.isArray(payload.paths)
+              ? (payload.paths as unknown[]).map((p) => ({ path: p, kind: 'other' }))
+              : [];
+
+        const files = (rawFiles as unknown[])
+          .map((f) =>
+            isRecord(f) && typeof f.path === 'string'
+              ? { path: f.path.trim(), kind: typeof f.kind === 'string' ? f.kind : 'other' }
+              : typeof f === 'string'
+                ? { path: f.trim(), kind: 'other' }
+                : { path: '', kind: 'other' }
+          )
+          .filter((f) => Boolean(f.path))
+          .slice(0, 500);
+
+        if (files.length === 0) {
+          await this.post({ type: 'toast', level: 'error', message: 'No files provided.' });
+          return;
+        }
+
+        const ok = await confirm('Checkout files? This will discard local changes.', 'Checkout');
+        if (!ok) {
+          await this.post({ type: 'toast', level: 'success', message: 'Checkout cancelled.' });
+          return;
+        }
+
+        const untracked = files.filter((f) => f.kind === 'untracked').map((f) => f.path);
+        const tracked = files.filter((f) => f.kind !== 'untracked').map((f) => f.path);
+
+        if (tracked.length) {
+          const posixPaths = tracked.map((p) => p.replace(/\\/g, '/'));
+          await git.raw(['checkout', '--', ...posixPaths]);
+        }
+
+        if (untracked.length) {
+          const unique = Array.from(new Set(untracked));
+          for (const rel of unique) {
+            const abs = path.resolve(root, rel);
+            try {
+              await rm(abs, { recursive: true, force: true });
+            } catch (err) {
+              void err;
+            }
+          }
+        }
+
+        await renderWorkingFiles();
+        await this.post({ type: 'result', action, title: 'Checked out files', content: await renderStatus() });
+        await this.post({ type: 'toast', level: 'success', message: 'Checked out.' });
         return;
       }
 
@@ -1074,6 +1161,20 @@ class DashboardPanel {
       .file-list::-webkit-scrollbar-thumb:hover {
         background: color-mix(in srgb, var(--fg) 32%, transparent);
       }
+      .file-row {
+        display: grid;
+        grid-template-columns: 14px 1fr;
+        align-items: center;
+        column-gap: 8px;
+        min-width: 0;
+        width: 100%;
+      }
+      .file-select {
+        margin: 0;
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+      }
       .file-item {
         appearance: none;
         border: 1px solid var(--border);
@@ -1086,12 +1187,16 @@ class DashboardPanel {
         align-items: center;
         gap: 10px;
         text-align: left;
+        flex: 1;
         width: 100%;
         min-width: 0;
       }
       .file-item:hover {
         border-color: color-mix(in srgb, var(--focus) 60%, transparent);
         background: color-mix(in srgb, var(--bg) 78%, transparent);
+      }
+      .file-row.is-selected .file-item {
+        border-color: color-mix(in srgb, var(--focus) 80%, transparent);
       }
       .file-path {
         flex: 1;
@@ -1444,7 +1549,10 @@ class DashboardPanel {
               </div>
               <div class="file-list" id="workingFileList" role="list" aria-label="Working directory files"></div>
               <div class="node-actions">
-                <button class="btn" data-action="stageAll">Stage</button>
+                <div class="actions-row">
+                  <button class="btn" data-action="stageFiles">Stage</button>
+                  <button class="btn secondary" data-action="checkoutFiles">Checkout</button>
+                </div>
               </div>
             </div>
           </div>
