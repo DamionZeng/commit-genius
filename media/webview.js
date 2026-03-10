@@ -9,6 +9,8 @@
   let currentAction = '';
   let isCommitModalOpen = false;
   let isSyncingCommit = false;
+  let isCommitDetailsOpen = false;
+  const commitMetaByHash = new Map();
 
   // --- DOM Elements ---
   const mainWrap = document.getElementById('mainWrap');
@@ -20,6 +22,7 @@
   const badgeWorking = document.getElementById('badge-working');
   const badgeStaged = document.getElementById('badge-staged');
   const workingFileList = document.getElementById('workingFileList');
+  const localCommitList = document.getElementById('localCommitList');
   const commitInput = document.getElementById('commit-message-input');
   const logPre = document.getElementById('log');
   const statusText = document.getElementById('statusText');
@@ -91,6 +94,12 @@
         break;
       case 'workingFiles':
         renderWorkingFiles(message.files);
+        break;
+      case 'commits':
+        renderCommits(message.commits);
+        break;
+      case 'commitDetails':
+        openCommitDetailsModal(message.hash, message.content);
         break;
       case 'runState':
         isRunning = message.state === 'running';
@@ -422,6 +431,77 @@
       });
   }
 
+  function renderCommits(commits) {
+    if (!localCommitList) return;
+    const safeCommits = Array.isArray(commits) ? commits : [];
+    const list = safeCommits
+      .map((c) => ({
+        hash: String(c?.hash || '').trim(),
+        message: String(c?.message || '').trim(),
+        authorName: String(c?.authorName || '').trim(),
+        date: String(c?.date || '').trim()
+      }))
+      .filter((c) => Boolean(c.hash))
+      .slice(0, 50);
+
+    commitMetaByHash.clear();
+    list.forEach((c) => {
+      commitMetaByHash.set(c.hash, c);
+    });
+
+    localCommitList.textContent = '';
+    localCommitList.style.display = 'flex';
+    localCommitList.style.flexDirection = 'column';
+    localCommitList.style.alignItems = 'stretch';
+    localCommitList.style.width = '100%';
+    localCommitList.style.maxWidth = '100%';
+    localCommitList.style.minWidth = '0';
+    localCommitList.style.overflowX = 'hidden';
+
+    if (list.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No commits';
+      empty.style.color = 'var(--muted)';
+      empty.style.fontSize = '12px';
+      empty.style.padding = '4px 2px';
+      localCommitList.appendChild(empty);
+      return;
+    }
+
+    list.forEach((c) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'file-item';
+      btn.style.width = '100%';
+      btn.style.maxWidth = '100%';
+      btn.style.minWidth = '0';
+
+      const msg = document.createElement('span');
+      msg.className = 'file-path';
+      msg.textContent = c.message || c.hash.slice(0, 7);
+      msg.style.flex = '1';
+      msg.style.minWidth = '0';
+      msg.style.overflow = 'hidden';
+      msg.style.textOverflow = 'ellipsis';
+      msg.style.whiteSpace = 'nowrap';
+
+      const hash = document.createElement('span');
+      hash.className = 'file-kind';
+      hash.textContent = c.hash.slice(0, 7);
+      hash.style.flex = '0 0 auto';
+      btn.title = `${c.authorName || ''}${c.authorName && c.date ? ' · ' : ''}${c.date || ''}`.trim();
+      btn.appendChild(msg);
+      btn.appendChild(hash);
+
+      btn.addEventListener('click', () => {
+        if (isRunning) return;
+        vscode.postMessage({ type: 'runAction', action: 'commitDetails', payload: { hash: c.hash } });
+      });
+
+      localCommitList.appendChild(btn);
+    });
+  }
+
   function pickTargetWorkingFiles() {
     if (!Array.isArray(lastWorkingFiles) || lastWorkingFiles.length === 0) return [];
     if (!selectedWorkingPaths.size) return lastWorkingFiles;
@@ -649,6 +729,22 @@
         box-sizing: border-box;
       }
       .cg-commit-textarea:focus { border-color: var(--focus); }
+      .cg-commit-details {
+        width: 100%;
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        color: var(--input-fg);
+        border-radius: 8px;
+        padding: 10px;
+        font-family: var(--vscode-editor-font-family);
+        font-size: 12px;
+        line-height: 1.45;
+        max-height: 420px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        box-sizing: border-box;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -964,6 +1060,165 @@
     return el;
   }
 
+  function openCommitDetailsModal(hash, content) {
+    ensureUiStyles();
+    const overlay = getOrCreateCommitDetailsOverlay();
+    overlay.dataset.hash = String(hash || '');
+
+    const title = document.getElementById('cgCommitDetailsTitle');
+    if (title) title.textContent = `Commit ${String(hash || '').slice(0, 7)}`;
+    const summaryTitle = document.getElementById('cgCommitDetailsSummaryTitle');
+    const summaryMeta = document.getElementById('cgCommitDetailsSummaryMeta');
+    const meta = commitMetaByHash.get(String(hash || '')) || undefined;
+    if (summaryTitle) summaryTitle.textContent = meta?.message || '';
+    if (summaryMeta) {
+      const parts = [];
+      if (meta?.authorName) parts.push(meta.authorName);
+      if (meta?.date) parts.push(meta.date);
+      summaryMeta.textContent = parts.join(' · ');
+    }
+
+    const pre = document.getElementById('cgCommitDetailsPre');
+    if (pre) pre.textContent = String(content || '').trimEnd();
+
+    overlay.classList.add('show');
+    isCommitDetailsOpen = true;
+  }
+
+  function closeCommitDetailsModal() {
+    const overlay = document.getElementById('cgCommitDetailsOverlay');
+    if (!overlay) return;
+    overlay.classList.remove('show');
+    isCommitDetailsOpen = false;
+  }
+
+  function getOrCreateCommitDetailsOverlay() {
+    let el = document.getElementById('cgCommitDetailsOverlay');
+    if (el) return el;
+
+    el = document.createElement('div');
+    el.id = 'cgCommitDetailsOverlay';
+    el.className = 'cg-overlay cg-overlay-top';
+
+    const card = document.createElement('div');
+    card.className = 'cg-card cg-commit-card';
+
+    const head = document.createElement('div');
+    head.className = 'cg-commit-head';
+
+    const title = document.createElement('div');
+    title.className = 'cg-card-title';
+    title.id = 'cgCommitDetailsTitle';
+    title.textContent = 'Commit';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'cg-btn';
+    closeBtn.textContent = 'Close';
+
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+
+    const summaryWrap = document.createElement('div');
+    summaryWrap.style.display = 'flex';
+    summaryWrap.style.flexDirection = 'column';
+    summaryWrap.style.gap = '2px';
+    summaryWrap.style.minWidth = '0';
+    summaryWrap.style.maxWidth = '100%';
+
+    const summaryTitle = document.createElement('div');
+    summaryTitle.id = 'cgCommitDetailsSummaryTitle';
+    summaryTitle.style.fontSize = '13px';
+    summaryTitle.style.fontWeight = '600';
+    summaryTitle.style.minWidth = '0';
+    summaryTitle.style.maxWidth = '100%';
+    summaryTitle.style.overflow = 'hidden';
+    summaryTitle.style.textOverflow = 'ellipsis';
+    summaryTitle.style.whiteSpace = 'nowrap';
+
+    const summaryMeta = document.createElement('div');
+    summaryMeta.id = 'cgCommitDetailsSummaryMeta';
+    summaryMeta.style.fontSize = '11px';
+    summaryMeta.style.color = 'var(--muted)';
+    summaryMeta.style.minWidth = '0';
+    summaryMeta.style.maxWidth = '100%';
+    summaryMeta.style.overflow = 'hidden';
+    summaryMeta.style.textOverflow = 'ellipsis';
+    summaryMeta.style.whiteSpace = 'nowrap';
+
+    summaryWrap.appendChild(summaryTitle);
+    summaryWrap.appendChild(summaryMeta);
+
+    const pre = document.createElement('pre');
+    pre.id = 'cgCommitDetailsPre';
+    pre.className = 'cg-commit-details';
+
+    const actions = document.createElement('div');
+    actions.className = 'cg-commit-actions';
+
+    const resetSoftBtn = document.createElement('button');
+    resetSoftBtn.type = 'button';
+    resetSoftBtn.className = 'cg-btn';
+    resetSoftBtn.textContent = 'Reset soft';
+
+    const resetMixedBtn = document.createElement('button');
+    resetMixedBtn.type = 'button';
+    resetMixedBtn.className = 'cg-btn';
+    resetMixedBtn.textContent = 'Reset mixed';
+
+    const resetHardBtn = document.createElement('button');
+    resetHardBtn.type = 'button';
+    resetHardBtn.className = 'cg-btn';
+    resetHardBtn.textContent = 'Reset hard';
+
+    const copyHashBtn = document.createElement('button');
+    copyHashBtn.type = 'button';
+    copyHashBtn.className = 'cg-btn primary';
+    copyHashBtn.textContent = 'Copy hash';
+
+    const sendReset = (mode) => {
+      if (isRunning) return;
+      const hash = String(el.dataset.hash || '').trim();
+      if (!hash) return;
+      vscode.postMessage({ type: 'runAction', action: 'resetToCommit', payload: { hash, mode } });
+    };
+
+    resetSoftBtn.addEventListener('click', () => sendReset('soft'));
+    resetMixedBtn.addEventListener('click', () => sendReset('mixed'));
+    resetHardBtn.addEventListener('click', () => sendReset('hard'));
+    copyHashBtn.addEventListener('click', () => {
+      const hash = String(el.dataset.hash || '').trim();
+      if (!hash) return;
+      navigator.clipboard?.writeText(hash).catch(() => void 0);
+    });
+
+    actions.appendChild(resetSoftBtn);
+    actions.appendChild(resetMixedBtn);
+    actions.appendChild(resetHardBtn);
+    actions.appendChild(copyHashBtn);
+
+    closeBtn.addEventListener('click', closeCommitDetailsModal);
+    el.addEventListener('click', (e) => {
+      if (e.target === el) closeCommitDetailsModal();
+    });
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        if (!isCommitDetailsOpen) return;
+        if (e.key === 'Escape') closeCommitDetailsModal();
+      },
+      true
+    );
+
+    card.appendChild(head);
+    card.appendChild(summaryWrap);
+    card.appendChild(pre);
+    card.appendChild(actions);
+    el.appendChild(card);
+    document.body.appendChild(el);
+    return el;
+  }
+
   function handleRepoState(message) {
     const state = message && message.state ? String(message.state) : '';
     const root = message && message.root ? String(message.root) : '';
@@ -984,7 +1239,9 @@
     const el = getOrCreateInitOverlay();
     const body = document.getElementById('cgInitBody');
     if (body) {
-      body.textContent = root ? `当前目录未初始化 Git：\n${root}\n\n点击初始化后将显示主界面。` : '当前目录未初始化 Git。\n\n点击初始化后将显示主界面。';
+      body.textContent = root
+        ? `This folder is not a Git repository:\n${root}\n\nClick "Initialize Git" to continue.`
+        : 'This folder is not a Git repository.\n\nClick "Initialize Git" to continue.';
     }
     el.classList.add('show');
   }
@@ -1005,7 +1262,7 @@
     card.className = 'cg-card';
     const title = document.createElement('div');
     title.className = 'cg-card-title';
-    title.textContent = 'Git 未初始化';
+    title.textContent = 'Git not initialized';
     const body = document.createElement('div');
     body.className = 'cg-card-body';
     body.id = 'cgInitBody';

@@ -15,6 +15,7 @@ import {
   detectBaseRef,
   getCompareDiff,
   getCompareSummary,
+  getCommitDetails,
   getDiff,
   getHeadBranch,
   getLocalBranches,
@@ -53,7 +54,9 @@ type DashboardAction =
   | 'pull'
   | 'openCommitEditor'
   | 'revert'
-  | 'reset';
+  | 'reset'
+  | 'commitDetails'
+  | 'resetToCommit';
 
 type WebviewMessage =
   | { type: 'runAction'; action: DashboardAction; payload?: unknown }
@@ -91,7 +94,9 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       action === 'pull' ||
       action === 'openCommitEditor' ||
       action === 'revert' ||
-      action === 'reset'
+      action === 'reset' ||
+      action === 'commitDetails' ||
+      action === 'resetToCommit'
     ) {
       return { type: 'runAction', action, payload: value.payload };
     }
@@ -180,6 +185,8 @@ type PanelToWebviewMessage =
   | { type: 'runState'; state: 'running' | 'idle'; action?: DashboardAction; durationMs?: number }
   | { type: 'log'; level: LogLevel; message: string }
   | { type: 'branches'; current: string; branches: string[] }
+  | { type: 'commits'; commits: Array<{ hash: string; message: string; authorName: string; date: string }> }
+  | { type: 'commitDetails'; hash: string; content: string }
   | { type: 'repoState'; state: 'ready' | 'needsInit'; root: string }
   | {
       type: 'workingFiles';
@@ -528,6 +535,11 @@ class DashboardPanel {
         await this.post({ type: 'workingFiles', files });
       };
 
+      const renderCommits = async (): Promise<void> => {
+        const commits = await getRecentCommits(git, 30);
+        await this.post({ type: 'commits', commits });
+      };
+
       const confirm = async (message: string, confirmLabel: string): Promise<boolean> => {
         return await this.confirmWithPanel(sourcePanel, message, confirmLabel);
       };
@@ -553,11 +565,12 @@ class DashboardPanel {
         const content = await renderStatus();
         await renderBranches();
         await renderWorkingFiles();
+        await renderCommits();
         await this.post({ type: 'result', action: 'gitStatus', title: 'Git Status', content });
         await this.post({
           type: 'toast',
           level: 'success',
-          message: isRepo ? 'Git 已初始化。' : 'Git 初始化完成。'
+          message: isRepo ? 'Git is already initialized.' : 'Git initialization completed.'
         });
         return;
       }
@@ -586,6 +599,7 @@ class DashboardPanel {
         const content = await renderStatus();
         await renderBranches();
         await renderWorkingFiles();
+        await renderCommits();
         await this.post({ type: 'result', action, title: 'Git Status', content });
         await this.post({ type: 'toast', level: 'success', message: 'Git status refreshed.' });
         return;
@@ -601,8 +615,75 @@ class DashboardPanel {
         const content = await renderStatus();
         await renderBranches();
         await renderWorkingFiles();
+        await renderCommits();
         await this.post({ type: 'result', action: 'gitStatus', title: 'Git Status', content });
         await this.post({ type: 'toast', level: 'success', message: `Switched to branch: ${payload.branch}` });
+        return;
+      }
+
+      if (action === 'commitDetails') {
+        if (!isRecord(payload) || typeof payload.hash !== 'string') {
+          await this.post({ type: 'toast', level: 'error', message: 'Missing commit hash.' });
+          return;
+        }
+        const hash = payload.hash.trim();
+        if (!hash) {
+          await this.post({ type: 'toast', level: 'error', message: 'Invalid commit hash.' });
+          return;
+        }
+        const content = await getCommitDetails(git, hash);
+        await this.postTo(sourcePanel, { type: 'commitDetails', hash, content });
+        return;
+      }
+
+      if (action === 'resetToCommit') {
+        if (
+          !isRecord(payload) ||
+          typeof payload.hash !== 'string' ||
+          typeof payload.mode !== 'string' ||
+          !['soft', 'mixed', 'hard'].includes(payload.mode)
+        ) {
+          await this.post({ type: 'toast', level: 'error', message: 'Missing reset parameters.' });
+          return;
+        }
+
+        const ref = payload.hash.trim();
+        const mode = payload.mode as 'soft' | 'mixed' | 'hard';
+
+        if (!ref) {
+          await this.post({ type: 'toast', level: 'error', message: 'Invalid commit hash.' });
+          return;
+        }
+
+        if (mode === 'hard') {
+          const token = await this.promptWithPanel({
+            panel: sourcePanel,
+            title: 'Dangerous action confirmation',
+            message: 'Hard reset will discard changes. Type RESET to continue.',
+            placeholder: 'RESET',
+            confirmLabel: 'Continue',
+            cancelLabel: 'Cancel',
+            expected: 'RESET'
+          });
+          if (token !== 'RESET') {
+            await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
+            return;
+          }
+        } else {
+          const ok = await confirm(`Run: git reset --${mode} ${ref}?`, 'Continue');
+          if (!ok) {
+            await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
+            return;
+          }
+        }
+
+        await resetTo(git, mode, ref);
+        const content = await renderStatus();
+        await renderBranches();
+        await renderWorkingFiles();
+        await renderCommits();
+        await this.post({ type: 'result', action: 'reset', title: `Reset --${mode}`, content });
+        await this.post({ type: 'toast', level: 'success', message: 'Reset complete.' });
         return;
       }
 
@@ -831,6 +912,8 @@ class DashboardPanel {
 
         const hash = await commitWithMessage(git, message);
         await vscode.env.clipboard.writeText(message);
+        await renderWorkingFiles();
+        await renderCommits();
 
         await this.post({
           type: 'result',
@@ -885,6 +968,8 @@ class DashboardPanel {
 
         const hash = await amendWithMessage(git, message);
         await vscode.env.clipboard.writeText(message);
+        await renderWorkingFiles();
+        await renderCommits();
 
         await this.post({
           type: 'result',
@@ -949,6 +1034,8 @@ class DashboardPanel {
         }
 
         await revertCommit(git, picked.hash);
+        await renderWorkingFiles();
+        await renderCommits();
         await this.post({ type: 'result', action, title: 'Reverted', content: await renderStatus() });
         await this.post({ type: 'toast', level: 'success', message: 'Reverted.' });
         return;
@@ -1035,6 +1122,8 @@ class DashboardPanel {
         }
 
         await resetTo(git, mode, ref);
+        await renderWorkingFiles();
+        await renderCommits();
         await this.post({ type: 'result', action, title: `Reset --${mode}`, content: await renderStatus() });
         await this.post({ type: 'toast', level: 'success', message: 'Reset complete.' });
         return;
@@ -1159,6 +1248,8 @@ class DashboardPanel {
         font-family: var(--vscode-font-family);
         color: var(--fg);
         background: linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, transparent), var(--bg));
+        overflow-y: scroll;
+        overflow-x: hidden;
       }
 
       .wrap { padding: 18px 14px; max-width: 1200px; margin: 0 auto; }
@@ -1789,6 +1880,7 @@ class DashboardPanel {
                 </div>
                 <div class="node-status" id="status-local">—</div>
               </div>
+              <div class="file-list" id="localCommitList" role="list" aria-label="Recent commits"></div>
               <div class="node-actions">
                 <button class="btn" data-action="push">Push</button>
               </div>

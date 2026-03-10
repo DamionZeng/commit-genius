@@ -28,7 +28,7 @@ export async function getLocalBranches(
 
 export async function checkoutLocalBranch(git: SimpleGit, branch: string): Promise<void> {
   const b = branch.trim();
-  if (!b) throw new Error('需要提供要切换的分支名。');
+  if (!b) throw new Error('Branch name is required.');
   await git.checkout(b);
 }
 
@@ -80,7 +80,7 @@ export async function unstageAll(git: SimpleGit): Promise<void> {
 
 export async function commitWithMessage(git: SimpleGit, message: string): Promise<string> {
   const parts = splitCommitMessage(message);
-  if (!parts.subject) throw new Error('Commit message 不能为空。');
+  if (!parts.subject) throw new Error('Commit message cannot be empty.');
   if (parts.body) {
     await git.raw(['commit', '-m', parts.subject, '-m', parts.body]);
   } else {
@@ -92,7 +92,7 @@ export async function commitWithMessage(git: SimpleGit, message: string): Promis
 
 export async function amendWithMessage(git: SimpleGit, message: string): Promise<string> {
   const parts = splitCommitMessage(message);
-  if (!parts.subject) throw new Error('Commit message 不能为空。');
+  if (!parts.subject) throw new Error('Commit message cannot be empty.');
   if (parts.body) {
     await git.raw(['commit', '--amend', '-m', parts.subject, '-m', parts.body]);
   } else {
@@ -114,13 +114,13 @@ export async function pullCurrentBranch(git: SimpleGit): Promise<void> {
 
 export async function revertCommit(git: SimpleGit, hash: string): Promise<void> {
   const h = hash.trim();
-  if (!h) throw new Error('需要提供要 revert 的 commit hash。');
+  if (!h) throw new Error('Commit hash is required for revert.');
   await git.raw(['revert', '--no-edit', h]);
 }
 
 export async function resetTo(git: SimpleGit, mode: 'soft' | 'mixed' | 'hard', ref: string): Promise<void> {
   const r = ref.trim();
-  if (!r) throw new Error('需要提供 reset 目标（例如 HEAD~1 或 commit hash）。');
+  if (!r) throw new Error('Reset target is required (e.g. HEAD~1 or a commit hash).');
   await git.raw(['reset', `--${mode}`, r]);
 }
 
@@ -177,6 +177,13 @@ export async function getRecentCommits(
     authorName: c.author_name ?? '',
     date: c.date
   }));
+}
+
+export async function getCommitDetails(git: SimpleGit, hash: string): Promise<string> {
+  const h = hash.trim();
+  if (!h) throw new Error('Commit hash is required.');
+  const out = await git.raw(['show', '--no-patch', '--stat', '--format=fuller%n%n%B', h]);
+  return out ?? '';
 }
 
 export async function getRemoteUrl(git: SimpleGit): Promise<string> {
