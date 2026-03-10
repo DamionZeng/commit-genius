@@ -19,6 +19,7 @@ import {
   getHeadBranch,
   getLocalBranches,
   getRecentCommits,
+  getRemoteUrl,
   getStatusSummary,
   pullCurrentBranch,
   pushCurrentBranch,
@@ -39,6 +40,7 @@ type DashboardAction =
   | 'testConnection'
   | 'openSettings'
   | 'gitStatus'
+  | 'initGit'
   | 'checkoutBranch'
   | 'openDiff'
   | 'stageFiles'
@@ -76,6 +78,7 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       action === 'testConnection' ||
       action === 'openSettings' ||
       action === 'gitStatus' ||
+      action === 'initGit' ||
       action === 'checkoutBranch' ||
       action === 'openDiff' ||
       action === 'stageFiles' ||
@@ -177,6 +180,7 @@ type PanelToWebviewMessage =
   | { type: 'runState'; state: 'running' | 'idle'; action?: DashboardAction; durationMs?: number }
   | { type: 'log'; level: LogLevel; message: string }
   | { type: 'branches'; current: string; branches: string[] }
+  | { type: 'repoState'; state: 'ready' | 'needsInit'; root: string }
   | {
       type: 'workingFiles';
       files: Array<{ path: string; kind: 'modified' | 'untracked' | 'deleted' | 'renamed' | 'other' }>;
@@ -482,10 +486,12 @@ class DashboardPanel {
 
       const renderStatus = async (): Promise<string> => {
         const s = await getStatusSummary(git);
+        const remote = await getRemoteUrl(git);
         const tracking = s.tracking ? ` (${s.tracking})` : '';
         const aheadBehind = s.ahead || s.behind ? ` ahead:${s.ahead} behind:${s.behind}` : '';
         const lines = [
           `branch: ${s.current || '(detached)'}${tracking}${aheadBehind}`,
+          `remote: ${remote || ''}`,
           `staged: ${s.staged}`,
           `modified: ${s.modified}`,
           `untracked: ${s.not_added}`,
@@ -525,6 +531,40 @@ class DashboardPanel {
       const confirm = async (message: string, confirmLabel: string): Promise<boolean> => {
         return await this.confirmWithPanel(sourcePanel, message, confirmLabel);
       };
+
+      let isRepo = false;
+      try {
+        isRepo = await git.checkIsRepo();
+      } catch (err) {
+        void err;
+        isRepo = false;
+      }
+
+      if (!isRepo && action !== 'testConnection' && action !== 'initGit') {
+        await this.postTo(sourcePanel, { type: 'repoState', state: 'needsInit', root });
+        return;
+      }
+
+      if (action === 'initGit') {
+        if (!isRepo) {
+          await git.init();
+        }
+        await this.postTo(sourcePanel, { type: 'repoState', state: 'ready', root });
+        const content = await renderStatus();
+        await renderBranches();
+        await renderWorkingFiles();
+        await this.post({ type: 'result', action: 'gitStatus', title: 'Git Status', content });
+        await this.post({
+          type: 'toast',
+          level: 'success',
+          message: isRepo ? 'Git 已初始化。' : 'Git 初始化完成。'
+        });
+        return;
+      }
+
+      if (isRepo) {
+        await this.postTo(sourcePanel, { type: 'repoState', state: 'ready', root });
+      }
 
       if (action === 'testConnection') {
         await log('info', 'calling AI...');
@@ -1121,7 +1161,7 @@ class DashboardPanel {
         background: linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, transparent), var(--bg));
       }
 
-      .wrap { padding: 20px; max-width: 1100px; margin: 0 auto; }
+      .wrap { padding: 18px 14px; max-width: 1200px; margin: 0 auto; }
       
       /* Title Bar */
       .title {
@@ -1382,6 +1422,15 @@ class DashboardPanel {
         overflow: hidden;
         text-overflow: ellipsis;
       }
+
+      .node[data-step="remote"] .node-header { gap: 10px; }
+      .node[data-step="remote"] .node-icon { width: 32px; height: 32px; }
+      .node[data-step="remote"] .node-title {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        word-break: break-all;
+      }
       
       .node-status {
         font-size: 11px;
@@ -1604,7 +1653,7 @@ class DashboardPanel {
     </style>
   </head>
   <body>
-    <div class="wrap">
+    <div class="wrap" id="mainWrap">
       <noscript>
         <div class="toast show error">
           <div class="dot bad"></div>
@@ -1758,7 +1807,7 @@ class DashboardPanel {
                     <path d="M8.5 16.5 12 13l3.5 3.5"></path>
                   </svg>
                 </div>
-                <div class="node-title">Remote Repo</div>
+                <div class="node-title" id="remoteTitle">Remote Repo</div>
                 <div class="node-status" id="status-remote">—</div>
               </div>
               <div class="node-actions">

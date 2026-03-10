@@ -7,12 +7,16 @@
   let lastWorkingFiles = [];
   const selectedWorkingPaths = new Set();
   let currentAction = '';
+  let isCommitModalOpen = false;
+  let isSyncingCommit = false;
 
   // --- DOM Elements ---
+  const mainWrap = document.getElementById('mainWrap');
   const statusWorkspace = document.getElementById('status-workspace');
   const statusStage = document.getElementById('status-stage');
   const statusLocal = document.getElementById('status-local');
   const statusRemote = document.getElementById('status-remote');
+  const remoteTitle = document.getElementById('remoteTitle');
   const badgeWorking = document.getElementById('badge-working');
   const badgeStaged = document.getElementById('badge-staged');
   const workingFileList = document.getElementById('workingFileList');
@@ -24,6 +28,9 @@
 
   if (statusWorkspace) {
     statusWorkspace.style.display = 'none';
+  }
+  if (mainWrap) {
+    mainWrap.style.display = 'none';
   }
 
   // Settings Elements
@@ -69,6 +76,9 @@
     switch (message.type) {
       case 'toast':
         showToast(message.message, message.level);
+        break;
+      case 'repoState':
+        handleRepoState(message);
         break;
       case 'confirm':
         handleConfirm(message);
@@ -128,9 +138,23 @@
 
   document.getElementById('commitExpand')?.addEventListener('click', () => {
     if (isRunning) return;
-    const message = commitInput ? String(commitInput.value || '') : '';
-    vscode.postMessage({ type: 'runAction', action: 'openCommitEditor', payload: { message } });
+    openCommitModal();
   });
+
+  if (commitInput) {
+    commitInput.addEventListener('input', () => {
+      if (isSyncingCommit) return;
+      if (!isCommitModalOpen) return;
+      const modalTextarea = document.getElementById('cgCommitTextarea');
+      if (!modalTextarea) return;
+      const next = String(commitInput.value || '');
+      if (modalTextarea.value !== next) {
+        isSyncingCommit = true;
+        modalTextarea.value = next;
+        isSyncingCommit = false;
+      }
+    });
+  }
 
   // 3. Settings Overlay
   if (openSettingsPanelBtn) {
@@ -231,6 +255,9 @@
         commitInput.value = message.content;
         commitInput.focus();
         // Trigger input event to resize if needed (though CSS handles it mostly)
+      }
+      if (isCommitModalOpen) {
+        syncCommitToModal();
       }
     } else if (message.action === 'gitStatus') {
         updateStatusNodes(message.content);
@@ -407,6 +434,10 @@
       const modifiedCount = s.modified;
       const untrackedCount = s.untracked;
 
+      if (remoteTitle) {
+        remoteTitle.textContent = 'Remote Repo';
+      }
+
       if (statusWorkspace) {
           const total = modifiedCount + untrackedCount;
           statusWorkspace.textContent = total > 0 ? `${total} to stage` : 'No changes';
@@ -452,7 +483,7 @@
   }
 
   function parseStatusText(content) {
-    const out = { branch: '', tracking: '', ahead: 0, behind: 0, staged: 0, modified: 0, untracked: 0 };
+    const out = { branch: '', tracking: '', remote: '', ahead: 0, behind: 0, staged: 0, modified: 0, untracked: 0 };
     if (!content) return out;
     const lines = String(content).split('\n');
     lines.forEach((line) => {
@@ -467,6 +498,7 @@
           out.behind = m[4] ? parseInt(m[4], 10) || 0 : 0;
         }
       }
+      if (lower.startsWith('remote:')) out.remote = String(line.split(':').slice(1).join(':')).trim();
       if (lower.startsWith('staged:')) out.staged = parseInt(line.split(':')[1], 10) || 0;
       if (lower.startsWith('modified:')) out.modified = parseInt(line.split(':')[1], 10) || 0;
       if (lower.startsWith('untracked:')) out.untracked = parseInt(line.split(':')[1], 10) || 0;
@@ -529,6 +561,8 @@
         padding: 16px;
         box-sizing: border-box;
       }
+      .cg-overlay.cg-overlay-top { align-items: flex-start; }
+      .cg-overlay.cg-overlay-top .cg-card { margin-top: 24px; }
       .cg-overlay.show { display: flex; }
       .cg-card {
         width: min(520px, 100%);
@@ -596,6 +630,25 @@
         font-size: 13px;
         color: var(--fg);
       }
+
+      .cg-commit-card { width: min(860px, 100%); }
+      .cg-commit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .cg-commit-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+      .cg-commit-textarea {
+        width: 100%;
+        min-height: 320px;
+        resize: vertical;
+        background: var(--input-bg);
+        border: 1px solid var(--input-border);
+        color: var(--input-fg);
+        border-radius: 8px;
+        padding: 10px;
+        font-family: var(--vscode-editor-font-family);
+        font-size: 12px;
+        outline: none;
+        box-sizing: border-box;
+      }
+      .cg-commit-textarea:focus { border-color: var(--focus); }
     `;
     document.head.appendChild(style);
   }
@@ -810,6 +863,169 @@
       input.focus();
       input.select();
     });
+  }
+
+  function openCommitModal() {
+    ensureUiStyles();
+    const overlay = getOrCreateCommitOverlay();
+    overlay.classList.add('show');
+    isCommitModalOpen = true;
+    syncCommitToModal();
+    const textarea = document.getElementById('cgCommitTextarea');
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+  }
+
+  function closeCommitModal() {
+    const overlay = document.getElementById('cgCommitOverlay');
+    if (!overlay) return;
+    overlay.classList.remove('show');
+    isCommitModalOpen = false;
+    if (commitInput) commitInput.focus();
+  }
+
+  function syncCommitToModal() {
+    if (!commitInput) return;
+    const textarea = document.getElementById('cgCommitTextarea');
+    if (!textarea) return;
+    const next = String(commitInput.value || '');
+    if (textarea.value === next) return;
+    isSyncingCommit = true;
+    textarea.value = next;
+    isSyncingCommit = false;
+  }
+
+  function getOrCreateCommitOverlay() {
+    let el = document.getElementById('cgCommitOverlay');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'cgCommitOverlay';
+    el.className = 'cg-overlay cg-overlay-top';
+    const card = document.createElement('div');
+    card.className = 'cg-card cg-commit-card';
+
+    const head = document.createElement('div');
+    head.className = 'cg-commit-head';
+    const title = document.createElement('div');
+    title.className = 'cg-card-title';
+    title.textContent = 'Staging Area · Commit Message';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'cg-btn';
+    closeBtn.textContent = 'Close';
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+
+    const textarea = document.createElement('textarea');
+    textarea.id = 'cgCommitTextarea';
+    textarea.className = 'cg-commit-textarea';
+    textarea.placeholder = 'Write a commit message, or generate one with AI...';
+    textarea.addEventListener('input', () => {
+      if (isSyncingCommit) return;
+      if (!commitInput) return;
+      isSyncingCommit = true;
+      commitInput.value = textarea.value;
+      commitInput.dispatchEvent(new Event('input', { bubbles: true }));
+      isSyncingCommit = false;
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'cg-commit-actions';
+    const generateBtn = document.createElement('button');
+    generateBtn.type = 'button';
+    generateBtn.className = 'cg-btn primary';
+    generateBtn.textContent = 'Generate';
+    generateBtn.addEventListener('click', () => {
+      if (isRunning) return;
+      vscode.postMessage({ type: 'runAction', action: 'commitMessage' });
+    });
+    actions.appendChild(generateBtn);
+
+    closeBtn.addEventListener('click', closeCommitModal);
+    el.addEventListener('click', (e) => {
+      if (e.target === el) closeCommitModal();
+    });
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        if (!isCommitModalOpen) return;
+        if (e.key === 'Escape') closeCommitModal();
+      },
+      true
+    );
+
+    card.appendChild(head);
+    card.appendChild(textarea);
+    card.appendChild(actions);
+    el.appendChild(card);
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function handleRepoState(message) {
+    const state = message && message.state ? String(message.state) : '';
+    const root = message && message.root ? String(message.root) : '';
+    if (state === 'needsInit') {
+      showInitOverlay(root);
+      if (mainWrap) mainWrap.style.display = 'none';
+      return;
+    }
+    if (state === 'ready') {
+      hideInitOverlay();
+      if (mainWrap) mainWrap.style.display = '';
+      return;
+    }
+  }
+
+  function showInitOverlay(root) {
+    ensureUiStyles();
+    const el = getOrCreateInitOverlay();
+    const body = document.getElementById('cgInitBody');
+    if (body) {
+      body.textContent = root ? `当前目录未初始化 Git：\n${root}\n\n点击初始化后将显示主界面。` : '当前目录未初始化 Git。\n\n点击初始化后将显示主界面。';
+    }
+    el.classList.add('show');
+  }
+
+  function hideInitOverlay() {
+    const el = document.getElementById('cgInitOverlay');
+    if (!el) return;
+    el.classList.remove('show');
+  }
+
+  function getOrCreateInitOverlay() {
+    let el = document.getElementById('cgInitOverlay');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'cgInitOverlay';
+    el.className = 'cg-overlay cg-overlay-top';
+    const card = document.createElement('div');
+    card.className = 'cg-card';
+    const title = document.createElement('div');
+    title.className = 'cg-card-title';
+    title.textContent = 'Git 未初始化';
+    const body = document.createElement('div');
+    body.className = 'cg-card-body';
+    body.id = 'cgInitBody';
+    const actions = document.createElement('div');
+    actions.className = 'cg-actions';
+    const initBtn = document.createElement('button');
+    initBtn.type = 'button';
+    initBtn.className = 'cg-btn primary';
+    initBtn.textContent = 'Initialize Git';
+    initBtn.addEventListener('click', () => {
+      if (isRunning) return;
+      vscode.postMessage({ type: 'runAction', action: 'initGit' });
+    });
+    actions.appendChild(initBtn);
+    card.appendChild(title);
+    card.appendChild(body);
+    card.appendChild(actions);
+    el.appendChild(card);
+    document.body.appendChild(el);
+    return el;
   }
 
   function appendLog(text, level) {
