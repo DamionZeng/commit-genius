@@ -6,6 +6,7 @@
   let config = {};
   let lastWorkingFiles = [];
   const selectedWorkingPaths = new Set();
+  let currentAction = '';
 
   // --- DOM Elements ---
   const statusWorkspace = document.getElementById('status-workspace');
@@ -69,6 +70,12 @@
       case 'toast':
         showToast(message.message, message.level);
         break;
+      case 'confirm':
+        handleConfirm(message);
+        break;
+      case 'prompt':
+        handlePrompt(message);
+        break;
       case 'branches':
         updateBranches(message.current, message.branches);
         break;
@@ -77,7 +84,8 @@
         break;
       case 'runState':
         isRunning = message.state === 'running';
-        updateLoadingState(isRunning);
+        currentAction = message.action || '';
+        updateLoadingState(isRunning, currentAction);
         if (statusText) {
             statusText.textContent = isRunning ? 'Running...' : 'Idle';
             statusText.className = 'node-status ' + (isRunning ? 'warning' : 'success');
@@ -482,13 +490,326 @@
     });
   }
 
-  function updateLoadingState(loading) {
+  function updateLoadingState(loading, action) {
       document.querySelectorAll('button').forEach(btn => {
           btn.disabled = loading;
           if (loading) btn.classList.add('loading');
           else btn.classList.remove('loading');
       });
       if (commitInput) commitInput.disabled = loading;
+      const shouldShow = Boolean(loading) && isAiAction(String(action || ''));
+      setLoadingOverlayVisible(shouldShow, action);
+  }
+
+  function isAiAction(action) {
+    return (
+      action === 'commitMessage' ||
+      action === 'commitGenerated' ||
+      action === 'amendGenerated' ||
+      action === 'changelog' ||
+      action === 'prDescription' ||
+      action === 'testConnection'
+    );
+  }
+
+  function ensureUiStyles() {
+    if (document.getElementById('cgUiStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'cgUiStyles';
+    style.textContent = `
+      @keyframes cgSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .cg-overlay {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0,0,0,0.35);
+        z-index: 9999;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      .cg-overlay.show { display: flex; }
+      .cg-card {
+        width: min(520px, 100%);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--bg) 78%, transparent);
+        backdrop-filter: blur(10px);
+        padding: 14px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        color: var(--fg);
+      }
+      .cg-card-title {
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .cg-card-body {
+        font-size: 13px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .cg-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+      .cg-btn {
+        appearance: none;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 7px 12px;
+        cursor: pointer;
+        background: transparent;
+        color: var(--fg);
+        font-size: 12px;
+      }
+      .cg-btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-fg);
+      }
+      .cg-btn.primary:hover {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+      }
+      .cg-loading-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .cg-spinner {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        border: 2px solid color-mix(in srgb, var(--fg) 20%, transparent);
+        border-top-color: color-mix(in srgb, var(--fg) 75%, transparent);
+        animation: cgSpin 0.9s linear infinite;
+        flex: 0 0 auto;
+      }
+      .cg-loading-text {
+        font-size: 13px;
+        color: var(--fg);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function getOrCreateLoadingOverlay() {
+    ensureUiStyles();
+    let el = document.getElementById('cgLoadingOverlay');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'cgLoadingOverlay';
+    el.className = 'cg-overlay';
+    const card = document.createElement('div');
+    card.className = 'cg-card';
+    const title = document.createElement('div');
+    title.className = 'cg-card-title';
+    title.textContent = 'Commit Genius';
+    const row = document.createElement('div');
+    row.className = 'cg-loading-row';
+    const spinner = document.createElement('div');
+    spinner.className = 'cg-spinner';
+    const text = document.createElement('div');
+    text.className = 'cg-loading-text';
+    text.id = 'cgLoadingText';
+    text.textContent = 'Working...';
+    row.appendChild(spinner);
+    row.appendChild(text);
+    card.appendChild(title);
+    card.appendChild(row);
+    el.appendChild(card);
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function setLoadingOverlayVisible(visible, action) {
+    const el = getOrCreateLoadingOverlay();
+    el.classList.toggle('show', Boolean(visible));
+    const label = document.getElementById('cgLoadingText');
+    if (label) {
+      label.textContent = action ? `Calling AI: ${action}` : 'Calling AI...';
+    }
+  }
+
+  function handleConfirm(message) {
+    const id = message && message.id ? String(message.id) : '';
+    if (!id) return;
+    const content = message && message.message ? String(message.message) : '';
+    const confirmLabel = message && message.confirmLabel ? String(message.confirmLabel) : 'OK';
+    const cancelLabel = message && message.cancelLabel ? String(message.cancelLabel) : 'Cancel';
+    showConfirmModal({ content, confirmLabel, cancelLabel })
+      .then((ok) => {
+        vscode.postMessage({ type: 'confirmResult', id, ok: Boolean(ok) });
+      })
+      .catch(() => {
+        vscode.postMessage({ type: 'confirmResult', id, ok: false });
+      });
+  }
+
+  function showConfirmModal({ content, confirmLabel, cancelLabel }) {
+    ensureUiStyles();
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'cg-overlay show';
+      const card = document.createElement('div');
+      card.className = 'cg-card';
+      const title = document.createElement('div');
+      title.className = 'cg-card-title';
+      title.textContent = 'Confirm';
+      const body = document.createElement('div');
+      body.className = 'cg-card-body';
+      body.textContent = String(content || '');
+      const actions = document.createElement('div');
+      actions.className = 'cg-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'cg-btn';
+      cancelBtn.textContent = cancelLabel || 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = 'cg-btn primary';
+      okBtn.textContent = confirmLabel || 'OK';
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      card.appendChild(title);
+      card.appendChild(body);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+
+      const cleanup = (ok) => {
+        window.removeEventListener('keydown', onKeyDown, true);
+        overlay.remove();
+        resolve(Boolean(ok));
+      };
+
+      const onKeyDown = (e) => {
+        if (e.key === 'Escape') cleanup(false);
+        if (e.key === 'Enter') cleanup(true);
+      };
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) cleanup(false);
+      });
+      cancelBtn.addEventListener('click', () => cleanup(false));
+      okBtn.addEventListener('click', () => cleanup(true));
+      window.addEventListener('keydown', onKeyDown, true);
+
+      document.body.appendChild(overlay);
+      okBtn.focus();
+    });
+  }
+
+  function handlePrompt(message) {
+    const id = message && message.id ? String(message.id) : '';
+    if (!id) return;
+    const title = message && message.title ? String(message.title) : 'Input required';
+    const content = message && message.message ? String(message.message) : '';
+    const placeholder = message && message.placeholder ? String(message.placeholder) : '';
+    const confirmLabel = message && message.confirmLabel ? String(message.confirmLabel) : 'OK';
+    const cancelLabel = message && message.cancelLabel ? String(message.cancelLabel) : 'Cancel';
+    const expected = message && message.expected ? String(message.expected) : '';
+
+    showPromptModal({ title, content, placeholder, confirmLabel, cancelLabel, expected })
+      .then((value) => {
+        vscode.postMessage({ type: 'promptResult', id, value });
+      })
+      .catch(() => {
+        vscode.postMessage({ type: 'promptResult', id, value: undefined });
+      });
+  }
+
+  function showPromptModal({ title, content, placeholder, confirmLabel, cancelLabel, expected }) {
+    ensureUiStyles();
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'cg-overlay show';
+      const card = document.createElement('div');
+      card.className = 'cg-card';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'cg-card-title';
+      titleEl.textContent = String(title || 'Input');
+      const body = document.createElement('div');
+      body.className = 'cg-card-body';
+      body.textContent = String(content || '');
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = placeholder || '';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.style.width = '100%';
+      input.style.boxSizing = 'border-box';
+      input.style.border = '1px solid var(--input-border)';
+      input.style.borderRadius = '10px';
+      input.style.padding = '8px 10px';
+      input.style.background = 'var(--input-bg)';
+      input.style.color = 'var(--input-fg)';
+      input.style.outline = 'none';
+
+      const actions = document.createElement('div');
+      actions.className = 'cg-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'cg-btn';
+      cancelBtn.textContent = cancelLabel || 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = 'cg-btn primary';
+      okBtn.textContent = confirmLabel || 'OK';
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+
+      card.appendChild(titleEl);
+      card.appendChild(body);
+      card.appendChild(input);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+
+      const validate = () => {
+        if (!expected) {
+          okBtn.disabled = false;
+          return;
+        }
+        okBtn.disabled = input.value !== expected;
+      };
+      validate();
+
+      const cleanup = (value) => {
+        window.removeEventListener('keydown', onKeyDown, true);
+        overlay.remove();
+        resolve(value);
+      };
+
+      const onKeyDown = (e) => {
+        if (e.key === 'Escape') cleanup(undefined);
+        if (e.key === 'Enter') {
+          if (okBtn.disabled) return;
+          cleanup(input.value);
+        }
+      };
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) cleanup(undefined);
+      });
+      input.addEventListener('input', validate);
+      cancelBtn.addEventListener('click', () => cleanup(undefined));
+      okBtn.addEventListener('click', () => {
+        if (okBtn.disabled) return;
+        cleanup(input.value);
+      });
+      window.addEventListener('keydown', onKeyDown, true);
+
+      document.body.appendChild(overlay);
+      input.focus();
+      input.select();
+    });
   }
 
   function appendLog(text, level) {

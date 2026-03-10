@@ -55,6 +55,8 @@ type DashboardAction =
 
 type WebviewMessage =
   | { type: 'runAction'; action: DashboardAction; payload?: unknown }
+  | { type: 'confirmResult'; id: string; ok: boolean }
+  | { type: 'promptResult'; id: string; value?: string }
   | { type: 'cancel' }
   | { type: 'saveConfig'; target: ConfigTarget; values: Record<string, unknown> };
 
@@ -91,6 +93,18 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
       return { type: 'runAction', action, payload: value.payload };
     }
     return undefined;
+  }
+
+  if (value.type === 'confirmResult') {
+    if (typeof value.id !== 'string') return undefined;
+    if (typeof value.ok !== 'boolean') return undefined;
+    return { type: 'confirmResult', id: value.id, ok: value.ok };
+  }
+
+  if (value.type === 'promptResult') {
+    if (typeof value.id !== 'string') return undefined;
+    if (value.value !== undefined && typeof value.value !== 'string') return undefined;
+    return { type: 'promptResult', id: value.id, value: value.value };
   }
 
   if (value.type === 'cancel') {
@@ -167,7 +181,18 @@ type PanelToWebviewMessage =
       type: 'workingFiles';
       files: Array<{ path: string; kind: 'modified' | 'untracked' | 'deleted' | 'renamed' | 'other' }>;
     }
-  | { type: 'result'; action: DashboardAction; title: string; content: string };
+  | { type: 'result'; action: DashboardAction; title: string; content: string }
+  | { type: 'confirm'; id: string; message: string; confirmLabel: string; cancelLabel: string }
+  | {
+      type: 'prompt';
+      id: string;
+      title: string;
+      message: string;
+      placeholder?: string;
+      confirmLabel: string;
+      cancelLabel: string;
+      expected?: string;
+    };
 
 type PrJson = { title: string; body: string };
 
@@ -184,6 +209,11 @@ class DashboardPanel {
   private abortController?: AbortController;
   private commitEditorPanel?: vscode.WebviewPanel;
   private readonly webviewPanels = new Set<vscode.WebviewPanel>();
+  private readonly pendingConfirms = new Map<string, { panel: vscode.WebviewPanel; resolve: (ok: boolean) => void }>();
+  private readonly pendingPrompts = new Map<
+    string,
+    { panel: vscode.WebviewPanel; resolve: (value: string | undefined) => void }
+  >();
 
   private constructor(
     private readonly context: vscode.ExtensionContext,
@@ -202,10 +232,30 @@ class DashboardPanel {
       } catch (err) {
         void err;
       }
+      for (const [id, pending] of this.pendingConfirms.entries()) {
+        if (pending.panel === panel) {
+          try {
+            pending.resolve(false);
+          } catch (err) {
+            void err;
+          }
+          this.pendingConfirms.delete(id);
+        }
+      }
+      for (const [id, pending] of this.pendingPrompts.entries()) {
+        if (pending.panel === panel) {
+          try {
+            pending.resolve(undefined);
+          } catch (err) {
+            void err;
+          }
+          this.pendingPrompts.delete(id);
+        }
+      }
       if (DashboardPanel.current === this) DashboardPanel.current = undefined;
     });
 
-    panel.webview.onDidReceiveMessage((raw) => this.onMessage(raw));
+    panel.webview.onDidReceiveMessage((raw) => this.onMessageFrom(panel, raw));
   }
 
   static createOrShow(context: vscode.ExtensionContext): void {
@@ -252,9 +302,43 @@ class DashboardPanel {
     }
   }
 
-  private async onMessage(raw: unknown): Promise<void> {
+  private async postTo(panel: vscode.WebviewPanel, message: PanelToWebviewMessage): Promise<void> {
+    try {
+      await panel.webview.postMessage(message);
+    } catch (err) {
+      void err;
+    }
+  }
+
+  private async onMessageFrom(panel: vscode.WebviewPanel, raw: unknown): Promise<void> {
     const message = parseWebviewMessage(raw);
     if (!message) {
+      return;
+    }
+
+    if (message.type === 'confirmResult') {
+      const pending = this.pendingConfirms.get(message.id);
+      if (!pending) return;
+      if (pending.panel !== panel) return;
+      this.pendingConfirms.delete(message.id);
+      try {
+        pending.resolve(message.ok);
+      } catch (err) {
+        void err;
+      }
+      return;
+    }
+
+    if (message.type === 'promptResult') {
+      const pending = this.pendingPrompts.get(message.id);
+      if (!pending) return;
+      if (pending.panel !== panel) return;
+      this.pendingPrompts.delete(message.id);
+      try {
+        pending.resolve(message.value);
+      } catch (err) {
+        void err;
+      }
       return;
     }
 
@@ -313,11 +397,49 @@ class DashboardPanel {
     }
 
     if (message.type === 'runAction') {
-      await this.runAction(message.action, message.payload);
+      await this.runAction(panel, message.action, message.payload);
     }
   }
 
-  private async runAction(action: DashboardAction, payload?: unknown): Promise<void> {
+  private async confirmWithPanel(
+    panel: vscode.WebviewPanel,
+    message: string,
+    confirmLabel: string,
+    cancelLabel = 'Cancel'
+  ): Promise<boolean> {
+    const id = getNonce();
+    return await new Promise<boolean>((resolve) => {
+      this.pendingConfirms.set(id, { panel, resolve });
+      void this.postTo(panel, { type: 'confirm', id, message, confirmLabel, cancelLabel });
+    });
+  }
+
+  private async promptWithPanel(options: {
+    panel: vscode.WebviewPanel;
+    title: string;
+    message: string;
+    placeholder?: string;
+    confirmLabel: string;
+    cancelLabel?: string;
+    expected?: string;
+  }): Promise<string | undefined> {
+    const id = getNonce();
+    return await new Promise<string | undefined>((resolve) => {
+      this.pendingPrompts.set(id, { panel: options.panel, resolve });
+      void this.postTo(options.panel, {
+        type: 'prompt',
+        id,
+        title: options.title,
+        message: options.message,
+        placeholder: options.placeholder,
+        confirmLabel: options.confirmLabel,
+        cancelLabel: options.cancelLabel ?? 'Cancel',
+        expected: options.expected
+      });
+    });
+  }
+
+  private async runAction(sourcePanel: vscode.WebviewPanel, action: DashboardAction, payload?: unknown): Promise<void> {
     if (action === 'openCommitEditor') {
       const initialMessage =
         isRecord(payload) && typeof payload.message === 'string' ? payload.message : '';
@@ -401,8 +523,7 @@ class DashboardPanel {
       };
 
       const confirm = async (message: string, confirmLabel: string): Promise<boolean> => {
-        const picked = await vscode.window.showWarningMessage(message, { modal: true }, confirmLabel);
-        return picked === confirmLabel;
+        return await this.confirmWithPanel(sourcePanel, message, confirmLabel);
       };
 
       if (action === 'testConnection') {
@@ -852,11 +973,14 @@ class DashboardPanel {
         }
 
         if (mode === 'hard') {
-          const token = await vscode.window.showInputBox({
+          const token = await this.promptWithPanel({
+            panel: sourcePanel,
             title: 'Dangerous action confirmation',
-            prompt: 'Hard reset will discard changes. Type RESET to continue.',
-            placeHolder: 'RESET',
-            ignoreFocusOut: true
+            message: 'Hard reset will discard changes. Type RESET to continue.',
+            placeholder: 'RESET',
+            confirmLabel: 'Continue',
+            cancelLabel: 'Cancel',
+            expected: 'RESET'
           });
           if (token !== 'RESET') {
             await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
@@ -1799,10 +1923,30 @@ class DashboardPanel {
 
     panel.onDidDispose(() => {
       this.webviewPanels.delete(panel);
+      for (const [id, pending] of this.pendingConfirms.entries()) {
+        if (pending.panel === panel) {
+          try {
+            pending.resolve(false);
+          } catch (err) {
+            void err;
+          }
+          this.pendingConfirms.delete(id);
+        }
+      }
+      for (const [id, pending] of this.pendingPrompts.entries()) {
+        if (pending.panel === panel) {
+          try {
+            pending.resolve(undefined);
+          } catch (err) {
+            void err;
+          }
+          this.pendingPrompts.delete(id);
+        }
+      }
       if (this.commitEditorPanel === panel) this.commitEditorPanel = undefined;
     });
 
-    panel.webview.onDidReceiveMessage((raw) => this.onMessage(raw));
+    panel.webview.onDidReceiveMessage((raw) => this.onMessageFrom(panel, raw));
     panel.webview.html = this.getCommitEditorHtml(panel.webview, initialMessage);
   }
 
