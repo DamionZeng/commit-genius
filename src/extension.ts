@@ -13,6 +13,8 @@ import {
   commitWithMessage,
   createGit,
   detectBaseRef,
+  createSafetyBackupRef,
+  createSafetyStash,
   getCompareDiff,
   getCompareSummary,
   getCommitDetails,
@@ -544,6 +546,29 @@ class DashboardPanel {
         return await this.confirmWithPanel(sourcePanel, message, confirmLabel);
       };
 
+      const preflightText = (s: Awaited<ReturnType<typeof getStatusSummary>>): string => {
+        const untracked = s.not_added + s.created;
+        const parts: string[] = [];
+        parts.push(`Branch: ${s.current || '(unknown)'}`);
+        parts.push(`Staged: ${s.staged}`);
+        parts.push(`Modified: ${s.modified}`);
+        parts.push(`Untracked: ${untracked}`);
+        parts.push(`Conflicted: ${s.conflicted}`);
+        return parts.join('\n');
+      };
+
+      const isDirty = (s: Awaited<ReturnType<typeof getStatusSummary>>): boolean => {
+        return (
+          s.staged > 0 ||
+          s.modified > 0 ||
+          s.not_added > 0 ||
+          s.created > 0 ||
+          s.deleted > 0 ||
+          s.renamed > 0 ||
+          s.conflicted > 0
+        );
+      };
+
       let isRepo = false;
       try {
         isRepo = await git.checkIsRepo();
@@ -656,10 +681,11 @@ class DashboardPanel {
         }
 
         if (mode === 'hard') {
+          const s = await getStatusSummary(git);
           const token = await this.promptWithPanel({
             panel: sourcePanel,
             title: 'Dangerous action confirmation',
-            message: 'Hard reset will discard changes. Type RESET to continue.',
+            message: `Hard reset will discard changes.\n\nPreflight:\n${preflightText(s)}\n\nA safety backup ref will be created.\nIf your working tree is dirty, a safety stash will also be created.\n\nType RESET to continue.`,
             placeholder: 'RESET',
             confirmLabel: 'Continue',
             cancelLabel: 'Cancel',
@@ -669,8 +695,36 @@ class DashboardPanel {
             await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
             return;
           }
+
+          const backupRef = await createSafetyBackupRef(git, 'hard-reset');
+          await log('info', `safetyBackup=${backupRef}`);
+          await this.post({ type: 'toast', level: 'success', message: `Safety backup created: ${backupRef}` });
+
+          if (isDirty(s)) {
+            try {
+              const stash = await createSafetyStash(git, `commit-genius: safety stash before hard reset (${ref})`);
+              await log('info', `safetyStash=${stash.output || '(no output)'}`);
+              if (stash.created) {
+                await this.post({ type: 'toast', level: 'success', message: 'Safety stash created.' });
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              const ok = await confirm(
+                `Safety stash failed.\n\n${msg}\n\nContinue without stash backup?`,
+                'Continue'
+              );
+              if (!ok) {
+                await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
+                return;
+              }
+            }
+          }
         } else {
-          const ok = await confirm(`Run: git reset --${mode} ${ref}?`, 'Continue');
+          const s = await getStatusSummary(git);
+          const ok = await confirm(
+            `Run: git reset --${mode} ${ref}?\n\nPreflight:\n${preflightText(s)}`,
+            'Continue'
+          );
           if (!ok) {
             await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
             return;
@@ -782,14 +836,33 @@ class DashboardPanel {
           return;
         }
 
-        const ok = await confirm('Checkout files? This will discard local changes.', 'Checkout');
+        const s = await getStatusSummary(git);
+        const untracked = files.filter((f) => f.kind === 'untracked').map((f) => f.path);
+        const tracked = files.filter((f) => f.kind !== 'untracked').map((f) => f.path);
+        const ok = await confirm(
+          `Checkout selected files? This will discard local changes for these paths.\n\nFiles: ${files.length} (tracked: ${tracked.length}, untracked: ${untracked.length})\n\nPreflight:\n${preflightText(s)}\n\nA safety stash will be created before checkout.`,
+          'Checkout'
+        );
         if (!ok) {
           await this.post({ type: 'toast', level: 'success', message: 'Checkout cancelled.' });
           return;
         }
 
-        const untracked = files.filter((f) => f.kind === 'untracked').map((f) => f.path);
-        const tracked = files.filter((f) => f.kind !== 'untracked').map((f) => f.path);
+        const allPaths = files.map((f) => f.path);
+        try {
+          const stash = await createSafetyStash(git, `commit-genius: safety stash before checkoutFiles (${files.length} files)`, allPaths);
+          await log('info', `safetyStash=${stash.output || '(no output)'}`);
+          if (stash.created) {
+            await this.post({ type: 'toast', level: 'success', message: 'Safety stash created.' });
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const ok2 = await confirm(`Safety stash failed.\n\n${msg}\n\nContinue without stash backup?`, 'Continue');
+          if (!ok2) {
+            await this.post({ type: 'toast', level: 'success', message: 'Checkout cancelled.' });
+            return;
+          }
+        }
 
         if (tracked.length) {
           const posixPaths = tracked.map((p) => p.replace(/\\/g, '/'));
@@ -1100,10 +1173,11 @@ class DashboardPanel {
         }
 
         if (mode === 'hard') {
+          const s = await getStatusSummary(git);
           const token = await this.promptWithPanel({
             panel: sourcePanel,
             title: 'Dangerous action confirmation',
-            message: 'Hard reset will discard changes. Type RESET to continue.',
+            message: `Hard reset will discard changes.\n\nPreflight:\n${preflightText(s)}\n\nA safety backup ref will be created.\nIf your working tree is dirty, a safety stash will also be created.\n\nType RESET to continue.`,
             placeholder: 'RESET',
             confirmLabel: 'Continue',
             cancelLabel: 'Cancel',
@@ -1113,8 +1187,36 @@ class DashboardPanel {
             await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
             return;
           }
+
+          const backupRef = await createSafetyBackupRef(git, 'hard-reset');
+          await log('info', `safetyBackup=${backupRef}`);
+          await this.post({ type: 'toast', level: 'success', message: `Safety backup created: ${backupRef}` });
+
+          if (isDirty(s)) {
+            try {
+              const stash = await createSafetyStash(git, `commit-genius: safety stash before hard reset (${ref})`);
+              await log('info', `safetyStash=${stash.output || '(no output)'}`);
+              if (stash.created) {
+                await this.post({ type: 'toast', level: 'success', message: 'Safety stash created.' });
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              const ok = await confirm(
+                `Safety stash failed.\n\n${msg}\n\nContinue without stash backup?`,
+                'Continue'
+              );
+              if (!ok) {
+                await this.post({ type: 'toast', level: 'success', message: 'Hard reset cancelled.' });
+                return;
+              }
+            }
+          }
         } else {
-          const ok = await confirm(`Run: git reset --${mode} ${ref}?`, 'Continue');
+          const s = await getStatusSummary(git);
+          const ok = await confirm(
+            `Run: git reset --${mode} ${ref}?\n\nPreflight:\n${preflightText(s)}`,
+            'Continue'
+          );
           if (!ok) {
             await this.post({ type: 'toast', level: 'success', message: 'Reset cancelled.' });
             return;

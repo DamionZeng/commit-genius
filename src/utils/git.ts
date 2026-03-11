@@ -124,6 +124,40 @@ export async function resetTo(git: SimpleGit, mode: 'soft' | 'mixed' | 'hard', r
   await git.raw(['reset', `--${mode}`, r]);
 }
 
+function compactTimestamp(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+export async function createSafetyBackupRef(git: SimpleGit, label: string): Promise<string> {
+  const safeLabel = label.replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
+  const name = `refs/commit-genius/backup/${compactTimestamp()}${safeLabel ? `-${safeLabel}` : ''}`;
+  await git.raw(['update-ref', name, 'HEAD']);
+  return name;
+}
+
+export async function createSafetyStash(
+  git: SimpleGit,
+  message: string,
+  paths?: string[]
+): Promise<{ created: boolean; output: string }> {
+  const args = ['stash', 'push', '-u', '-m', message];
+  const ps = Array.isArray(paths)
+    ? paths
+        .map((p) => String(p || '').trim())
+        .filter(Boolean)
+        .map((p) => p.replace(/\\/g, '/'))
+    : [];
+  if (ps.length) args.push('--', ...ps);
+  const out = await git.raw(args);
+  const text = String(out || '').trim();
+  const created =
+    text.length > 0 &&
+    !/no local changes to save/i.test(text) &&
+    !/no changes/i.test(text);
+  return { created, output: text };
+}
+
 export async function detectBaseRef(git: SimpleGit): Promise<string> {
   try {
     const raw = await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD']);
