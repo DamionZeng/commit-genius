@@ -10,6 +10,13 @@
   let isCommitModalOpen = false;
   let isSyncingCommit = false;
   let isCommitDetailsOpen = false;
+  let isResultModalOpen = false;
+  let streamingResultAction = '';
+  let streamPending = '';
+  let streamFlushTimer = 0;
+  let streamingCommitAction = '';
+  let commitStreamPending = '';
+  let commitStreamTimer = 0;
   const commitMetaByHash = new Map();
 
   // --- DOM Elements ---
@@ -88,6 +95,26 @@
         break;
       case 'prompt':
         handlePrompt(message);
+        break;
+      case 'streamStart':
+        {
+          const action = String(message.action || '');
+          if (action === 'commitMessage' || action === 'commitGenerated' || action === 'amendGenerated') {
+            startCommitStream(action);
+          } else {
+            openResultModal(String(message.title || ''), '', action, true);
+          }
+        }
+        break;
+      case 'streamDelta':
+        {
+          const action = String(message.action || '');
+          if (action === 'commitMessage' || action === 'commitGenerated' || action === 'amendGenerated') {
+            appendCommitStream(action, String(message.chunk || ''));
+          } else {
+            appendStream(action, String(message.chunk || ''));
+          }
+        }
         break;
       case 'branches':
         updateBranches(message.current, message.branches);
@@ -259,7 +286,7 @@
   }
 
   function handleResult(message) {
-    if (message.action === 'commitMessage') {
+    if (message.action === 'commitMessage' || message.action === 'rewriteCommitMessage') {
       if (commitInput) {
         commitInput.value = message.content;
         commitInput.focus();
@@ -270,6 +297,8 @@
       }
     } else if (message.action === 'gitStatus') {
         updateStatusNodes(message.content);
+    } else if (message.action === 'changelog' || message.action === 'prDescription') {
+        openResultModal(String(message.title || ''), String(message.content || ''), String(message.action || ''), false);
     } else if (message.action === 'stageAll' || message.action === 'unstageAll' || message.action === 'stageFiles' || message.action === 'checkoutFiles') {
         if (message.content) updateStatusNodes(message.content);
         if (message.action === 'stageFiles' || message.action === 'checkoutFiles') {
@@ -283,6 +312,190 @@
              commitInput.value = '';
          }
     }
+  }
+
+  function openResultModal(title, content, action, isStreaming) {
+    ensureUiStyles();
+    const overlay = getOrCreateResultOverlay();
+    overlay.classList.add('show');
+    isResultModalOpen = true;
+    streamingResultAction = isStreaming ? String(action || '') : '';
+    streamPending = '';
+    if (streamFlushTimer) {
+      clearTimeout(streamFlushTimer);
+      streamFlushTimer = 0;
+    }
+
+    const titleEl = document.getElementById('cgResultTitle');
+    if (titleEl) titleEl.textContent = String(title || 'Result');
+    const textarea = document.getElementById('cgResultTextarea');
+    if (textarea) textarea.value = String(content || '');
+    const copyBtn = document.getElementById('cgResultCopy');
+    if (copyBtn) copyBtn.disabled = !String(content || '').trim();
+    const spinner = document.getElementById('cgResultSpinner');
+    if (spinner) spinner.style.display = isStreaming ? '' : 'none';
+
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+  }
+
+  function closeResultModal() {
+    const overlay = document.getElementById('cgResultOverlay');
+    if (!overlay) return;
+    overlay.classList.remove('show');
+    isResultModalOpen = false;
+    streamingResultAction = '';
+    streamPending = '';
+    if (streamFlushTimer) {
+      clearTimeout(streamFlushTimer);
+      streamFlushTimer = 0;
+    }
+  }
+
+  function appendStream(action, chunk) {
+    const a = String(action || '');
+    if (!a || a !== streamingResultAction) return;
+    const c = String(chunk || '');
+    if (!c) return;
+    streamPending += c;
+    if (streamFlushTimer) return;
+    streamFlushTimer = setTimeout(() => {
+      streamFlushTimer = 0;
+      const textarea = document.getElementById('cgResultTextarea');
+      if (!textarea) return;
+      const wasAtBottom = textarea.scrollTop + textarea.clientHeight + 20 >= textarea.scrollHeight;
+      textarea.value += streamPending;
+      streamPending = '';
+      if (wasAtBottom) textarea.scrollTop = textarea.scrollHeight;
+      const copyBtn = document.getElementById('cgResultCopy');
+      if (copyBtn) copyBtn.disabled = !textarea.value.trim();
+    }, 60);
+  }
+
+  function clearCommitStream() {
+    streamingCommitAction = '';
+    commitStreamPending = '';
+    if (commitStreamTimer) {
+      clearTimeout(commitStreamTimer);
+      commitStreamTimer = 0;
+    }
+  }
+
+  function startCommitStream(action) {
+    streamingCommitAction = String(action || '');
+    commitStreamPending = '';
+    if (commitStreamTimer) {
+      clearTimeout(commitStreamTimer);
+      commitStreamTimer = 0;
+    }
+    if (commitInput) {
+      isSyncingCommit = true;
+      commitInput.value = '';
+      commitInput.dispatchEvent(new Event('input', { bubbles: true }));
+      isSyncingCommit = false;
+    }
+    if (isCommitModalOpen) {
+      syncCommitToModal();
+    }
+  }
+
+  function appendCommitStream(action, chunk) {
+    const a = String(action || '');
+    if (!a || a !== streamingCommitAction) return;
+    const c = String(chunk || '');
+    if (!c) return;
+    commitStreamPending += c;
+    if (commitStreamTimer) return;
+    commitStreamTimer = setTimeout(() => {
+      commitStreamTimer = 0;
+      if (!commitInput) return;
+      isSyncingCommit = true;
+      commitInput.value = String(commitInput.value || '') + commitStreamPending;
+      commitInput.dispatchEvent(new Event('input', { bubbles: true }));
+      isSyncingCommit = false;
+      commitStreamPending = '';
+      if (isCommitModalOpen) {
+        syncCommitToModal();
+      }
+    }, 50);
+  }
+
+  function getOrCreateResultOverlay() {
+    let el = document.getElementById('cgResultOverlay');
+    if (el) return el;
+
+    el = document.createElement('div');
+    el.id = 'cgResultOverlay';
+    el.className = 'cg-overlay cg-overlay-top';
+
+    const card = document.createElement('div');
+    card.className = 'cg-card cg-commit-card';
+
+    const head = document.createElement('div');
+    head.className = 'cg-commit-head';
+    const title = document.createElement('div');
+    title.className = 'cg-card-title';
+    title.id = 'cgResultTitle';
+    title.textContent = 'Result';
+    const headRight = document.createElement('div');
+    headRight.style.display = 'flex';
+    headRight.style.alignItems = 'center';
+    headRight.style.gap = '10px';
+    const spinner = document.createElement('div');
+    spinner.id = 'cgResultSpinner';
+    spinner.className = 'cg-spinner';
+    spinner.style.width = '14px';
+    spinner.style.height = '14px';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'cg-btn';
+    closeBtn.textContent = 'Close';
+    headRight.appendChild(spinner);
+    headRight.appendChild(closeBtn);
+    head.appendChild(title);
+    head.appendChild(headRight);
+
+    const textarea = document.createElement('textarea');
+    textarea.id = 'cgResultTextarea';
+    textarea.className = 'cg-commit-textarea';
+    textarea.readOnly = true;
+
+    const actions = document.createElement('div');
+    actions.className = 'cg-commit-actions';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'cg-btn primary';
+    copyBtn.id = 'cgResultCopy';
+    copyBtn.textContent = 'Copy';
+    copyBtn.disabled = true;
+    copyBtn.addEventListener('click', () => {
+      const t = String(textarea.value || '').trimEnd();
+      if (!t) return;
+      navigator.clipboard?.writeText(t).catch(() => void 0);
+    });
+    actions.appendChild(copyBtn);
+
+    closeBtn.addEventListener('click', closeResultModal);
+    el.addEventListener('click', (e) => {
+      if (e.target === el) closeResultModal();
+    });
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        if (!isResultModalOpen) return;
+        if (e.key === 'Escape') closeResultModal();
+      },
+      true
+    );
+
+    card.appendChild(head);
+    card.appendChild(textarea);
+    card.appendChild(actions);
+    el.appendChild(card);
+    document.body.appendChild(el);
+    return el;
   }
 
   function clearWorkingSelection() {
@@ -603,19 +816,39 @@
   }
 
   function updateLoadingState(loading, action) {
-      document.querySelectorAll('button').forEach(btn => {
-          btn.disabled = loading;
-          if (loading) btn.classList.add('loading');
-          else btn.classList.remove('loading');
+      const actionName = String(action || '');
+      document.querySelectorAll('button[data-action]').forEach(btn => {
+          const btnAction = btn.getAttribute('data-action') || '';
+          const isTarget = btnAction === actionName;
+          if (loading && isTarget) {
+              if (!btn.dataset.label) btn.dataset.label = btn.textContent || '';
+              btn.textContent = `${btn.dataset.label}...`;
+              btn.classList.add('loading');
+              btn.disabled = true;
+              return;
+          }
+          if (!loading && btn.dataset.label) {
+              btn.textContent = btn.dataset.label;
+              delete btn.dataset.label;
+          }
+          btn.classList.remove('loading');
+          btn.disabled = false;
       });
-      if (commitInput) commitInput.disabled = loading;
-      const shouldShow = Boolean(loading) && isAiAction(String(action || ''));
-      setLoadingOverlayVisible(shouldShow, action);
+      if (commitInput) {
+        const lock =
+          loading &&
+          (actionName === 'commitMessage' || actionName === 'commitGenerated' || actionName === 'amendGenerated');
+        commitInput.disabled = lock;
+      }
+      if (!loading) {
+        clearCommitStream();
+      }
   }
 
   function isAiAction(action) {
     return (
       action === 'commitMessage' ||
+      action === 'rewriteCommitMessage' ||
       action === 'commitGenerated' ||
       action === 'amendGenerated' ||
       action === 'changelog' ||
@@ -773,6 +1006,18 @@
     row.appendChild(text);
     card.appendChild(title);
     card.appendChild(row);
+    const actions = document.createElement('div');
+    actions.className = 'cg-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'cg-btn';
+    cancelBtn.id = 'cgLoadingCancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'cancel' });
+    });
+    actions.appendChild(cancelBtn);
+    card.appendChild(actions);
     el.appendChild(card);
     document.body.appendChild(el);
     return el;
@@ -1038,6 +1283,29 @@
       vscode.postMessage({ type: 'runAction', action: 'commitMessage' });
     });
     actions.appendChild(generateBtn);
+
+    const makeRewrite = (label, mode) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cg-btn';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        if (isRunning) return;
+        const msg = String(textarea.value || '');
+        if (!msg.trim()) {
+          showToast('No commit message to rewrite.', 'error');
+          return;
+        }
+        vscode.postMessage({ type: 'runAction', action: 'rewriteCommitMessage', payload: { message: msg, mode } });
+      });
+      return btn;
+    };
+
+    actions.appendChild(makeRewrite('Shorter', 'shorter'));
+    actions.appendChild(makeRewrite('More detail', 'moreDetailed'));
+    actions.appendChild(makeRewrite('Formal', 'moreFormal'));
+    actions.appendChild(makeRewrite('中文', 'zh'));
+    actions.appendChild(makeRewrite('English', 'en'));
 
     closeBtn.addEventListener('click', closeCommitModal);
     el.addEventListener('click', (e) => {

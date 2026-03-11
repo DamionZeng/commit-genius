@@ -5,7 +5,7 @@ import { getAdapter } from './adapters';
 import { generateCommitMessageCommand } from './commands/generateCommitMessage';
 import { generateChangelogCommand } from './commands/generateChangelog';
 import { generatePrDescriptionCommand } from './commands/generatePrDescription';
-import { chatJson, chatText } from './utils/ai';
+import { chatText, chatTextStream } from './utils/ai';
 import { getConfig } from './utils/config';
 import {
   amendWithMessage,
@@ -38,6 +38,7 @@ type ConfigTarget = 'workspace' | 'global';
 
 type DashboardAction =
   | 'commitMessage'
+  | 'rewriteCommitMessage'
   | 'changelog'
   | 'prDescription'
   | 'testConnection'
@@ -78,6 +79,7 @@ function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
     const action = value.action;
     if (
       action === 'commitMessage' ||
+      action === 'rewriteCommitMessage' ||
       action === 'changelog' ||
       action === 'prDescription' ||
       action === 'testConnection' ||
@@ -186,6 +188,8 @@ type PanelToWebviewMessage =
   | { type: 'toast'; level: 'success' | 'error'; message: string }
   | { type: 'runState'; state: 'running' | 'idle'; action?: DashboardAction; durationMs?: number }
   | { type: 'log'; level: LogLevel; message: string }
+  | { type: 'streamStart'; action: DashboardAction; title: string }
+  | { type: 'streamDelta'; action: DashboardAction; chunk: string }
   | { type: 'branches'; current: string; branches: string[] }
   | { type: 'commits'; commits: Array<{ hash: string; message: string; authorName: string; date: string }> }
   | { type: 'commitDetails'; hash: string; content: string }
@@ -213,6 +217,26 @@ function isPrJson(value: unknown): value is PrJson {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return typeof v.title === 'string' && typeof v.body === 'string';
+}
+
+function extractJsonObject(text: string): unknown {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) throw new Error('AI returned empty JSON output.');
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start === -1 || end === -1 || end <= start) {
+      throw new Error(`AI returned non-JSON output: ${trimmed.slice(0, 500)}`);
+    }
+    const candidate = trimmed.slice(start, end + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      throw new Error(`AI returned non-JSON output: ${trimmed.slice(0, 500)}`);
+    }
+  }
 }
 
 class DashboardPanel {
@@ -919,14 +943,31 @@ class DashboardPanel {
         }
 
         await log('info', 'calling AI...');
-        const message = await chatText(
+        await this.post({ type: 'streamStart', action, title: 'Commit Message (streaming)' });
+        let buffered = '';
+        let lastPostAt = 0;
+        const flush = async () => {
+          if (!buffered) return;
+          await this.post({ type: 'streamDelta', action, chunk: buffered });
+          buffered = '';
+          lastPostAt = Date.now();
+        };
+
+        const message = await chatTextStream(
           cfg.ai,
           [
             { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
             { role: 'user', content: commitPrompt({ diff, branch }) }
           ],
+          async (chunk) => {
+            buffered += chunk;
+            if (buffered.length >= 160 || Date.now() - lastPostAt >= 80) {
+              await flush();
+            }
+          },
           { signal: this.abortController.signal, timeoutMs: 60_000 }
         );
+        await flush();
 
         await vscode.commands.executeCommand('workbench.view.scm');
         if (vscode.scm?.inputBox) {
@@ -939,6 +980,77 @@ class DashboardPanel {
 
         await this.post({ type: 'result', action, title: 'Commit Message', content: message });
         await this.post({ type: 'toast', level: 'success', message: 'Commit message generated.' });
+        return;
+      }
+
+      if (action === 'rewriteCommitMessage') {
+        const currentMessage =
+          isRecord(payload) && typeof payload.message === 'string' ? payload.message : '';
+        const mode = isRecord(payload) && typeof payload.mode === 'string' ? payload.mode : '';
+
+        if (!currentMessage.trim()) {
+          await this.post({ type: 'toast', level: 'error', message: 'No commit message provided.' });
+          return;
+        }
+
+        const instruction =
+          mode === 'shorter'
+            ? 'Make it shorter and more direct.'
+            : mode === 'moreDetailed'
+              ? 'Add a bit more detail in the body if useful.'
+              : mode === 'moreFormal'
+                ? 'Make the tone more formal and professional.'
+                : mode === 'zh'
+                  ? 'Rewrite in Simplified Chinese.'
+                  : mode === 'en'
+                    ? 'Rewrite in English.'
+                    : 'Improve clarity while keeping it correct.';
+
+        const branch = await getHeadBranch(git);
+        const status = await getStatusSummary(git);
+        const diffScope = status.staged > 0 ? 'staged' : cfg.commit.diffScope;
+        const diff = await getDiff(git, diffScope);
+
+        await log('info', `branch=${branch}`);
+        await log('info', `rewrite=${mode || 'default'}`);
+        await log('info', 'calling AI...');
+
+        const next = await chatText(
+          cfg.ai,
+          [
+            { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
+            {
+              role: 'user',
+              content: [
+                'Rewrite the following Conventional Commit message.',
+                '',
+                `Instruction: ${instruction}`,
+                '',
+                'Rules:',
+                '- Output only the final commit message (no markdown).',
+                '- Keep Conventional Commits format: <type>(<scope>): <description>.',
+                '- Keep subject <= 72 chars, imperative mood.',
+                '',
+                `Branch: ${branch}`,
+                '',
+                'Current message:',
+                currentMessage.trim(),
+                '',
+                'Diff:',
+                diff.slice(0, 120_000)
+              ].join('\n')
+            }
+          ],
+          { signal: this.abortController.signal, timeoutMs: 60_000 }
+        );
+
+        await vscode.commands.executeCommand('workbench.view.scm');
+        if (vscode.scm?.inputBox) {
+          vscode.scm.inputBox.value = next;
+        }
+
+        await this.post({ type: 'result', action, title: 'Commit Message', content: next });
+        await this.post({ type: 'toast', level: 'success', message: 'Commit message updated.' });
         return;
       }
 
@@ -966,15 +1078,32 @@ class DashboardPanel {
             return;
           }
 
-          await log('info', 'calling AI...');
-          message = await chatText(
-            cfg.ai,
-            [
-              { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
-              { role: 'user', content: commitPrompt({ diff, branch }) }
-            ],
-            { signal: this.abortController.signal, timeoutMs: 60_000 }
-          );
+        await log('info', 'calling AI...');
+        await this.post({ type: 'streamStart', action, title: 'Commit Message (streaming)' });
+        let buffered = '';
+        let lastPostAt = 0;
+        const flush = async () => {
+          if (!buffered) return;
+          await this.post({ type: 'streamDelta', action, chunk: buffered });
+          buffered = '';
+          lastPostAt = Date.now();
+        };
+
+        message = await chatTextStream(
+          cfg.ai,
+          [
+            { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
+            { role: 'user', content: commitPrompt({ diff, branch }) }
+          ],
+          async (chunk) => {
+            buffered += chunk;
+            if (buffered.length >= 160 || Date.now() - lastPostAt >= 80) {
+              await flush();
+            }
+          },
+          { signal: this.abortController.signal, timeoutMs: 60_000 }
+        );
+        await flush();
         }
 
         const ok = await confirm('Commit changes?', 'Commit');
@@ -1022,15 +1151,32 @@ class DashboardPanel {
             return;
           }
 
-          await log('info', 'calling AI...');
-          message = await chatText(
-            cfg.ai,
-            [
-              { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
-              { role: 'user', content: commitPrompt({ diff, branch }) }
-            ],
-            { signal: this.abortController.signal, timeoutMs: 60_000 }
-          );
+        await log('info', 'calling AI...');
+        await this.post({ type: 'streamStart', action, title: 'Commit Message (streaming)' });
+        let buffered = '';
+        let lastPostAt = 0;
+        const flush = async () => {
+          if (!buffered) return;
+          await this.post({ type: 'streamDelta', action, chunk: buffered });
+          buffered = '';
+          lastPostAt = Date.now();
+        };
+
+        message = await chatTextStream(
+          cfg.ai,
+          [
+            { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
+            { role: 'user', content: commitPrompt({ diff, branch }) }
+          ],
+          async (chunk) => {
+            buffered += chunk;
+            if (buffered.length >= 160 || Date.now() - lastPostAt >= 80) {
+              await flush();
+            }
+          },
+          { signal: this.abortController.signal, timeoutMs: 60_000 }
+        );
+        await flush();
         }
 
         const ok = await confirm('Amend the last commit?', 'Amend');
@@ -1242,14 +1388,31 @@ class DashboardPanel {
         await log('info', `commits=${commits.length}`);
         await log('info', 'calling AI...');
 
-        const markdown = await chatText(
+        await this.post({ type: 'streamStart', action, title: 'CHANGELOG (streaming)' });
+        let buffered = '';
+        let lastPostAt = 0;
+        const flush = async () => {
+          if (!buffered) return;
+          await this.post({ type: 'streamDelta', action, chunk: buffered });
+          buffered = '';
+          lastPostAt = Date.now();
+        };
+
+        const markdown = await chatTextStream(
           cfg.ai,
           [
             { role: 'system', content: 'You generate clean, useful changelogs for developers.' },
             { role: 'user', content: changelogPrompt({ commits: commitLines }) }
           ],
-          { signal: this.abortController.signal, timeoutMs: 60_000 }
+          async (chunk) => {
+            buffered += chunk;
+            if (buffered.length >= 240 || Date.now() - lastPostAt >= 120) {
+              await flush();
+            }
+          },
+          { signal: this.abortController.signal, timeoutMs: 120_000 }
         );
+        await flush();
 
         const outPath = path.resolve(root, cfg.changelog.path);
         await writeFile(outPath, markdown.trimEnd() + '\n', 'utf8');
@@ -1279,15 +1442,38 @@ class DashboardPanel {
         const summary = await getCompareSummary(git, baseRef);
         await log('info', 'calling AI...');
 
-        const draft = await chatJson<PrJson>(
+        await this.post({ type: 'streamStart', action, title: 'PR Description (streaming draft JSON)' });
+        let buffered = '';
+        let lastPostAt = 0;
+        const flush = async () => {
+          if (!buffered) return;
+          await this.post({ type: 'streamDelta', action, chunk: buffered });
+          buffered = '';
+          lastPostAt = Date.now();
+        };
+
+        const rawJsonText = await chatTextStream(
           cfg.ai,
           [
             { role: 'system', content: 'You write clear, reviewer-friendly pull request descriptions.' },
-            { role: 'user', content: prPrompt({ baseRef, branch, summary, diff }) }
+            { role: 'user', content: prPrompt({ baseRef, branch, summary, diff }) },
+            { role: 'system', content: 'Return only valid JSON. Do not wrap JSON in markdown fences.' }
           ],
-          isPrJson,
-          { signal: this.abortController.signal, timeoutMs: 60_000 }
+          async (chunk) => {
+            buffered += chunk;
+            if (buffered.length >= 240 || Date.now() - lastPostAt >= 120) {
+              await flush();
+            }
+          },
+          { signal: this.abortController.signal, timeoutMs: 120_000 }
         );
+        await flush();
+
+        const parsed = extractJsonObject(rawJsonText);
+        if (!isPrJson(parsed)) {
+          throw new Error('AI returned unexpected JSON schema.');
+        }
+        const draft = parsed;
 
         const adapter = getAdapter(cfg.pr.platform);
         const formatted = adapter.formatDraft(

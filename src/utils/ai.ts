@@ -11,6 +11,17 @@ interface ChatCompletionResponse {
   }>;
 }
 
+interface ChatCompletionStreamChunk {
+  choices?: Array<{
+    delta?: {
+      content?: string;
+    };
+    message?: {
+      content?: string;
+    };
+  }>;
+}
+
 export interface ChatMessage {
   role: Role;
   content: string;
@@ -90,6 +101,99 @@ export async function chatText(
     throw new Error('AI response is empty.');
   }
   return text.trim();
+}
+
+export async function chatTextStream(
+  config: ExtensionConfig['ai'],
+  messages: ChatMessage[],
+  onDelta: (chunk: string) => void | Promise<void>,
+  options?: ChatRequestOptions
+): Promise<string> {
+  if (!config.apiKey) {
+    throw new Error('Missing commitGenius.ai.apiKey.');
+  }
+
+  const client = axios.create({
+    baseURL: normalizeBaseUrl(config.baseUrl),
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    timeout: options?.timeoutMs ?? 60_000,
+    signal: options?.signal
+  });
+
+  let resp;
+  try {
+    resp = await client.post('/chat/completions', {
+      model: config.model,
+      temperature: config.temperature,
+      messages,
+      stream: true
+    }, { responseType: 'stream' });
+  } catch (err) {
+    throw formatAiRequestError(err, config.baseUrl);
+  }
+
+  const stream = resp?.data as unknown;
+  const asyncIterable = stream as { [Symbol.asyncIterator]?: unknown };
+  if (!stream || typeof asyncIterable?.[Symbol.asyncIterator] !== 'function') {
+    throw new Error('AI streaming response is not a readable stream.');
+  }
+
+  let full = '';
+  let buffer = '';
+
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      buffer += Buffer.from(chunk).toString('utf8');
+
+      for (let idx = buffer.indexOf('\n'); idx !== -1; idx = buffer.indexOf('\n')) {
+        const rawLine = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+
+        const line = rawLine.trim();
+        if (!line) continue;
+        if (!line.startsWith('data:')) continue;
+
+        const data = line.slice('data:'.length).trim();
+        if (!data) continue;
+        if (data === '[DONE]') {
+          buffer = '';
+          break;
+        }
+
+        let parsed: ChatCompletionStreamChunk | undefined;
+        try {
+          parsed = JSON.parse(data) as ChatCompletionStreamChunk;
+        } catch {
+          continue;
+        }
+
+        const delta =
+          parsed?.choices?.[0]?.delta?.content ??
+          parsed?.choices?.[0]?.message?.content ??
+          '';
+
+        if (typeof delta === 'string' && delta) {
+          full += delta;
+          await onDelta(delta);
+        }
+      }
+
+      if (buffer === '') {
+        continue;
+      }
+    }
+  } catch (err) {
+    throw formatAiRequestError(err, config.baseUrl);
+  }
+
+  const text = full.trim();
+  if (!text) {
+    throw new Error('AI response is empty.');
+  }
+  return text;
 }
 
 export async function chatJson<T>(
