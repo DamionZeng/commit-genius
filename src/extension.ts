@@ -1015,7 +1015,17 @@ class DashboardPanel {
         await log('info', `rewrite=${mode || 'default'}`);
         await log('info', 'calling AI...');
 
-        const next = await chatText(
+        await this.post({ type: 'streamStart', action, title: 'Commit Message (rewriting)' });
+        let buffered = '';
+        let lastPostAt = 0;
+        const flush = async () => {
+          if (!buffered) return;
+          await this.post({ type: 'streamDelta', action, chunk: buffered });
+          buffered = '';
+          lastPostAt = Date.now();
+        };
+
+        const next = await chatTextStream(
           cfg.ai,
           [
             { role: 'system', content: 'You are a senior software engineer writing high-quality git commits.' },
@@ -1041,8 +1051,15 @@ class DashboardPanel {
               ].join('\n')
             }
           ],
+          async (chunk) => {
+            buffered += chunk;
+            if (buffered.length >= 160 || Date.now() - lastPostAt >= 80) {
+              await flush();
+            }
+          },
           { signal: this.abortController.signal, timeoutMs: 60_000 }
         );
+        await flush();
 
         await vscode.commands.executeCommand('workbench.view.scm');
         if (vscode.scm?.inputBox) {

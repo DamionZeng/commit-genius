@@ -17,6 +17,7 @@
   let streamingCommitAction = '';
   let commitStreamPending = '';
   let commitStreamTimer = 0;
+  let commitRewriteMode = '';
   const commitMetaByHash = new Map();
 
   // --- DOM Elements ---
@@ -99,7 +100,12 @@
       case 'streamStart':
         {
           const action = String(message.action || '');
-          if (action === 'commitMessage' || action === 'commitGenerated' || action === 'amendGenerated') {
+          if (
+            action === 'commitMessage' ||
+            action === 'commitGenerated' ||
+            action === 'amendGenerated' ||
+            action === 'rewriteCommitMessage'
+          ) {
             startCommitStream(action);
           } else {
             openResultModal(String(message.title || ''), '', action, true);
@@ -109,7 +115,12 @@
       case 'streamDelta':
         {
           const action = String(message.action || '');
-          if (action === 'commitMessage' || action === 'commitGenerated' || action === 'amendGenerated') {
+          if (
+            action === 'commitMessage' ||
+            action === 'commitGenerated' ||
+            action === 'amendGenerated' ||
+            action === 'rewriteCommitMessage'
+          ) {
             appendCommitStream(action, String(message.chunk || ''));
           } else {
             appendStream(action, String(message.chunk || ''));
@@ -837,7 +848,10 @@
       if (commitInput) {
         const lock =
           loading &&
-          (actionName === 'commitMessage' || actionName === 'commitGenerated' || actionName === 'amendGenerated');
+          (actionName === 'commitMessage' ||
+            actionName === 'commitGenerated' ||
+            actionName === 'amendGenerated' ||
+            actionName === 'rewriteCommitMessage');
         commitInput.disabled = lock;
       }
       if (!loading) {
@@ -947,6 +961,23 @@
       .cg-commit-card { width: min(860px, 100%); }
       .cg-commit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .cg-commit-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+      .cg-mode-chips { display: flex; flex: 1; flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
+      .cg-mode-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .cg-mode-chip {
+        appearance: none;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        padding: 3px 8px;
+        font-size: 11px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .cg-mode-chip.is-active {
+        border-color: color-mix(in srgb, var(--focus) 80%, transparent);
+        background: color-mix(in srgb, var(--focus) 14%, transparent);
+        color: var(--fg);
+      }
       .cg-commit-textarea {
         width: 100%;
         min-height: 320px;
@@ -1274,38 +1305,57 @@
 
     const actions = document.createElement('div');
     actions.className = 'cg-commit-actions';
+    const modesWrap = document.createElement('div');
+    modesWrap.className = 'cg-mode-chips';
+    const modesRow = document.createElement('div');
+    modesRow.className = 'cg-mode-row';
+    const modes = [
+      { label: 'Auto', value: '' },
+      { label: 'Shorter', value: 'shorter' },
+      { label: 'More detail', value: 'moreDetailed' },
+      { label: 'Formal', value: 'moreFormal' },
+      { label: '中文', value: 'zh' },
+      { label: 'English', value: 'en' }
+    ];
+    modes.forEach((item, index) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'cg-mode-chip' + (index === 0 ? ' is-active' : '');
+      chip.textContent = item.label;
+      chip.dataset.mode = item.value;
+      chip.addEventListener('click', () => {
+        commitRewriteMode = item.value;
+        modesRow.querySelectorAll('.cg-mode-chip').forEach((el) => {
+          el.classList.toggle('is-active', el === chip);
+        });
+      });
+      modesRow.appendChild(chip);
+    });
+    commitRewriteMode = '';
+    modesWrap.appendChild(modesRow);
     const generateBtn = document.createElement('button');
     generateBtn.type = 'button';
     generateBtn.className = 'cg-btn primary';
     generateBtn.textContent = 'Generate';
     generateBtn.addEventListener('click', () => {
       if (isRunning) return;
+      const msg = String(textarea.value || '');
+      if (msg.trim() && commitRewriteMode) {
+        vscode.postMessage({
+          type: 'runAction',
+          action: 'rewriteCommitMessage',
+          payload: { message: msg, mode: commitRewriteMode }
+        });
+        return;
+      }
       vscode.postMessage({ type: 'runAction', action: 'commitMessage' });
     });
-    actions.appendChild(generateBtn);
-
-    const makeRewrite = (label, mode) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'cg-btn';
-      btn.textContent = label;
-      btn.addEventListener('click', () => {
-        if (isRunning) return;
-        const msg = String(textarea.value || '');
-        if (!msg.trim()) {
-          showToast('No commit message to rewrite.', 'error');
-          return;
-        }
-        vscode.postMessage({ type: 'runAction', action: 'rewriteCommitMessage', payload: { message: msg, mode } });
-      });
-      return btn;
-    };
-
-    actions.appendChild(makeRewrite('Shorter', 'shorter'));
-    actions.appendChild(makeRewrite('More detail', 'moreDetailed'));
-    actions.appendChild(makeRewrite('Formal', 'moreFormal'));
-    actions.appendChild(makeRewrite('中文', 'zh'));
-    actions.appendChild(makeRewrite('English', 'en'));
+    const rightActions = document.createElement('div');
+    rightActions.style.display = 'flex';
+    rightActions.style.gap = '8px';
+    rightActions.appendChild(generateBtn);
+    actions.appendChild(modesWrap);
+    actions.appendChild(rightActions);
 
     closeBtn.addEventListener('click', closeCommitModal);
     el.addEventListener('click', (e) => {
