@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { chatJson } from '../utils/ai';
-import { getConfig } from '../utils/config';
+import { chatJson, toUserSafeErrorMessage } from '../utils/ai';
+import { getConfigWithSecrets } from '../utils/config';
 import { getAdapter } from '../adapters';
 import { createGit, detectBaseRef, getCompareDiff, getCompareSummary, getHeadBranch } from '../utils/git';
 import { prPrompt } from '../utils/prompts';
@@ -14,13 +14,13 @@ function isPrJson(value: unknown): value is PrJson {
   return typeof v.title === 'string' && typeof v.body === 'string';
 }
 
-export async function generatePrDescriptionCommand(): Promise<void> {
+export async function generatePrDescriptionCommand(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Commit Genius: Generating PR description' },
     async () => {
       try {
         const root = getWorkspaceRoot();
-        const cfg = getConfig();
+        const cfg = await getConfigWithSecrets(context);
         const git = createGit(root);
 
         const branch = await getHeadBranch(git);
@@ -49,7 +49,7 @@ export async function generatePrDescriptionCommand(): Promise<void> {
         await vscode.env.clipboard.writeText(clipboardText);
         await vscode.window.showInformationMessage('PR description generated and copied to clipboard.');
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = toUserSafeErrorMessage(err);
         await vscode.window.showErrorMessage(`Commit Genius: ${msg}`);
       }
     }

@@ -1,17 +1,17 @@
 import * as vscode from 'vscode';
-import { chatText } from '../utils/ai';
-import { getConfig } from '../utils/config';
+import { chatText, toUserSafeErrorMessage } from '../utils/ai';
+import { getConfigWithSecrets } from '../utils/config';
 import { createGit, getDiff, getHeadBranch } from '../utils/git';
 import { commitPrompt } from '../utils/prompts';
 import { getWorkspaceRoot } from '../utils/workspace';
 
-export async function generateCommitMessageCommand(): Promise<void> {
+export async function generateCommitMessageCommand(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Commit Genius: Generating commit message' },
     async () => {
       try {
         const root = getWorkspaceRoot();
-        const cfg = getConfig();
+        const cfg = await getConfigWithSecrets(context);
         const git = createGit(root);
         const branch = await getHeadBranch(git);
         const diff = await getDiff(git, cfg.commit.diffScope);
@@ -37,7 +37,7 @@ export async function generateCommitMessageCommand(): Promise<void> {
 
         await vscode.window.showInformationMessage('Commit message generated and filled into the Source Control input box.');
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = toUserSafeErrorMessage(err);
         await vscode.window.showErrorMessage(`Commit Genius: ${msg}`);
       }
     }

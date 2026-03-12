@@ -36,30 +36,39 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
 }
 
+function sanitizeUserMessage(text: string): string {
+  const raw = String(text || '');
+  const redacted = raw
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(apiKey|api_key|token)\s*=\s*([^\s|]+)/gi, '$1=[REDACTED]')
+    .replace(/\b(sk-[A-Za-z0-9]{10,})\b/g, 'sk-[REDACTED]')
+    .replace(/\b(rk-[A-Za-z0-9]{10,})\b/g, 'rk-[REDACTED]');
+  const oneLine = redacted.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= 320) return oneLine;
+  return oneLine.slice(0, 320).trimEnd() + '…';
+}
+
+export function toUserSafeErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return sanitizeUserMessage(raw || 'Unknown error.');
+}
+
 function formatAiRequestError(err: unknown, baseUrl: string): Error {
   if (axios.isAxiosError(err)) {
     const status = err.response?.status;
     const statusText = err.response?.statusText;
     const code = err.code;
     const message = err.message || 'Request failed.';
-    const responseData: unknown = err.response?.data;
-    const responsePreview =
-      typeof responseData === 'string'
-        ? responseData.slice(0, 800)
-        : responseData
-          ? JSON.stringify(responseData).slice(0, 800)
-          : '';
 
     const parts = [
       'AI request failed.',
       `baseUrl=${normalizeBaseUrl(baseUrl)}`,
       status ? `status=${status}${statusText ? ` ${statusText}` : ''}` : undefined,
       code ? `code=${code}` : undefined,
-      message ? `message=${message}` : undefined,
-      responsePreview ? `response=${responsePreview}` : undefined
+      message ? `message=${message}` : undefined
     ].filter(Boolean);
 
-    return new Error(parts.join(' | '));
+    return new Error(sanitizeUserMessage(parts.join(' | ')));
   }
 
   if (err instanceof Error) return err;
@@ -72,7 +81,7 @@ export async function chatText(
   options?: ChatRequestOptions
 ): Promise<string> {
   if (!config.apiKey) {
-    throw new Error('Missing commitGenius.ai.apiKey.');
+    throw new Error('Missing AI API key.');
   }
 
   const client = axios.create({
@@ -110,7 +119,7 @@ export async function chatTextStream(
   options?: ChatRequestOptions
 ): Promise<string> {
   if (!config.apiKey) {
-    throw new Error('Missing commitGenius.ai.apiKey.');
+    throw new Error('Missing AI API key.');
   }
 
   const client = axios.create({
@@ -214,7 +223,7 @@ export async function chatJson<T>(
   try {
     parsed = JSON.parse(text);
   } catch {
-    const start = text.slice(0, 500);
+    const start = sanitizeUserMessage(text);
     throw new Error(`AI returned non-JSON output: ${start}`);
   }
 

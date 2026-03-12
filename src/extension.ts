@@ -5,8 +5,8 @@ import { getAdapter } from './adapters';
 import { generateCommitMessageCommand } from './commands/generateCommitMessage';
 import { generateChangelogCommand } from './commands/generateChangelog';
 import { generatePrDescriptionCommand } from './commands/generatePrDescription';
-import { chatText, chatTextStream } from './utils/ai';
-import { getConfig } from './utils/config';
+import { chatText, chatTextStream, toUserSafeErrorMessage } from './utils/ai';
+import { getConfigWithSecrets, setAiApiKey } from './utils/config';
 import {
   amendWithMessage,
   checkoutLocalBranch,
@@ -32,7 +32,7 @@ import {
   unstageAll
 } from './utils/git';
 import { changelogPrompt, commitPrompt, prPrompt } from './utils/prompts';
-import { getWorkspaceRoot } from './utils/workspace';
+import { getWorkspaceRoot, resolveWorkspacePath } from './utils/workspace';
 
 type ConfigTarget = 'workspace' | 'global';
 
@@ -147,9 +147,12 @@ class GitRefContentProvider implements vscode.TextDocumentContentProvider {
       const q = new URLSearchParams(uri.query);
       const ref = q.get('ref') || 'HEAD';
       const rel = q.get('path') || '';
+      const posixPath = rel.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!posixPath || posixPath.split('/').some((p) => p === '..')) {
+        return '';
+      }
       const root = getWorkspaceRoot();
       const git = createGit(root);
-      const posixPath = rel.replace(/\\/g, '/');
       const out = await git.raw(['show', `${ref}:${posixPath}`]);
       return out ?? '';
     } catch {
@@ -170,7 +173,7 @@ function getInitialConfig() {
     target: vscode.workspace.workspaceFolders?.length ? ('workspace' as const) : ('global' as const),
     values: {
       'ai.baseUrl': c.get<string>('ai.baseUrl', 'https://api.openai.com/v1'),
-      'ai.apiKey': c.get<string>('ai.apiKey', ''),
+      'ai.apiKey': '',
       'ai.model': c.get<string>('ai.model', 'gpt-4o-mini'),
       'ai.temperature': c.get<number>('ai.temperature', 0.2),
       'commit.diffScope': c.get<string>('commit.diffScope', 'staged'),
@@ -228,13 +231,13 @@ function extractJsonObject(text: string): unknown {
     const start = trimmed.indexOf('{');
     const end = trimmed.lastIndexOf('}');
     if (start === -1 || end === -1 || end <= start) {
-      throw new Error(`AI returned non-JSON output: ${trimmed.slice(0, 500)}`);
+      throw new Error(`AI returned non-JSON output: ${trimmed.slice(0, 200)}`);
     }
     const candidate = trimmed.slice(start, end + 1);
     try {
       return JSON.parse(candidate);
     } catch {
-      throw new Error(`AI returned non-JSON output: ${trimmed.slice(0, 500)}`);
+      throw new Error(`AI returned non-JSON output: ${trimmed.slice(0, 200)}`);
     }
   }
 }
@@ -401,7 +404,6 @@ class DashboardPanel {
       const c = vscode.workspace.getConfiguration('commitGenius');
       const allowedKeys = new Set([
         'ai.baseUrl',
-        'ai.apiKey',
         'ai.model',
         'ai.temperature',
         'commit.diffScope',
@@ -412,6 +414,11 @@ class DashboardPanel {
       ]);
 
       try {
+        const rawKey = typeof values['ai.apiKey'] === 'string' ? values['ai.apiKey'] : '';
+        if (rawKey && rawKey.trim()) {
+          await setAiApiKey(this.context, rawKey);
+        }
+
         const updates: Array<Thenable<void>> = [];
         for (const [key, value] of Object.entries(values)) {
           if (!allowedKeys.has(key)) continue;
@@ -427,7 +434,7 @@ class DashboardPanel {
 
         await this.post({ type: 'toast', level: 'success', message: 'Settings saved.' });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = toUserSafeErrorMessage(err);
         await this.post({ type: 'toast', level: 'error', message: msg });
       }
       return;
@@ -510,7 +517,7 @@ class DashboardPanel {
       }
 
       const root = getWorkspaceRoot();
-      const cfg = getConfig();
+      const cfg = await getConfigWithSecrets(this.context);
       const git = createGit(root);
 
       await log('info', `workspace=${root}`);
@@ -771,13 +778,21 @@ class DashboardPanel {
           return;
         }
 
-        const relPath = payload.path.trim();
-        if (!relPath) {
+        const requestedPath = payload.path.trim();
+        if (!requestedPath) {
           await this.post({ type: 'toast', level: 'error', message: 'Invalid file path.' });
           return;
         }
 
-        const abs = path.resolve(root, relPath);
+        let abs: string;
+        let relPath: string;
+        try {
+          abs = resolveWorkspacePath(root, requestedPath);
+          relPath = path.relative(path.resolve(root), abs).replace(/\\/g, '/');
+        } catch (err) {
+          await this.post({ type: 'toast', level: 'error', message: toUserSafeErrorMessage(err) });
+          return;
+        }
         const rightFile = vscode.Uri.file(abs);
 
         const makeGitUri = (ref: string): vscode.Uri => {
@@ -817,7 +832,7 @@ class DashboardPanel {
               ? (payload.files as unknown[])
               : [];
 
-        const paths = (rawPaths as unknown[])
+        let paths = (rawPaths as unknown[])
           .map((p) => (typeof p === 'string' ? p : isRecord(p) && typeof p.path === 'string' ? p.path : ''))
           .map((p) => p.trim())
           .filter(Boolean)
@@ -825,6 +840,13 @@ class DashboardPanel {
 
         if (paths.length === 0) {
           await this.post({ type: 'toast', level: 'error', message: 'No file paths provided.' });
+          return;
+        }
+
+        try {
+          paths = paths.map((p) => path.relative(path.resolve(root), resolveWorkspacePath(root, p)).replace(/\\/g, '/'));
+        } catch (err) {
+          await this.post({ type: 'toast', level: 'error', message: toUserSafeErrorMessage(err) });
           return;
         }
 
@@ -844,7 +866,7 @@ class DashboardPanel {
               ? (payload.paths as unknown[]).map((p) => ({ path: p, kind: 'other' }))
               : [];
 
-        const files = (rawFiles as unknown[])
+        let files = (rawFiles as unknown[])
           .map((f) =>
             isRecord(f) && typeof f.path === 'string'
               ? { path: f.path.trim(), kind: typeof f.kind === 'string' ? f.kind : 'other' }
@@ -857,6 +879,16 @@ class DashboardPanel {
 
         if (files.length === 0) {
           await this.post({ type: 'toast', level: 'error', message: 'No files provided.' });
+          return;
+        }
+
+        try {
+          files = files.map((f) => ({
+            ...f,
+            path: path.relative(path.resolve(root), resolveWorkspacePath(root, f.path)).replace(/\\/g, '/')
+          }));
+        } catch (err) {
+          await this.post({ type: 'toast', level: 'error', message: toUserSafeErrorMessage(err) });
           return;
         }
 
@@ -880,7 +912,7 @@ class DashboardPanel {
             await this.post({ type: 'toast', level: 'success', message: 'Safety stash created.' });
           }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = toUserSafeErrorMessage(err);
           const ok2 = await confirm(`Safety stash failed.\n\n${msg}\n\nContinue without stash backup?`, 'Continue');
           if (!ok2) {
             await this.post({ type: 'toast', level: 'success', message: 'Checkout cancelled.' });
@@ -896,7 +928,7 @@ class DashboardPanel {
         if (untracked.length) {
           const unique = Array.from(new Set(untracked));
           for (const rel of unique) {
-            const abs = path.resolve(root, rel);
+            const abs = resolveWorkspacePath(root, rel);
             try {
               await rm(abs, { recursive: true, force: true });
             } catch (err) {
@@ -1517,7 +1549,7 @@ class DashboardPanel {
         return;
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = toUserSafeErrorMessage(err);
       await log('error', msg);
       await this.post({ type: 'toast', level: 'error', message: msg });
     } finally {
@@ -2497,9 +2529,9 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider('commit-genius-git', new GitRefContentProvider()),
     vscode.workspace.registerTextDocumentContentProvider('commit-genius-empty', new EmptyContentProvider()),
-    vscode.commands.registerCommand('commitGenius.generateCommitMessage', generateCommitMessageCommand),
-    vscode.commands.registerCommand('commitGenius.generateChangelog', generateChangelogCommand),
-    vscode.commands.registerCommand('commitGenius.generatePrDescription', generatePrDescriptionCommand),
+    vscode.commands.registerCommand('commitGenius.generateCommitMessage', () => generateCommitMessageCommand(context)),
+    vscode.commands.registerCommand('commitGenius.generateChangelog', () => generateChangelogCommand(context)),
+    vscode.commands.registerCommand('commitGenius.generatePrDescription', () => generatePrDescriptionCommand(context)),
     vscode.commands.registerCommand('commitGenius.openPanel', () => DashboardPanel.createOrShow(context))
   );
 }

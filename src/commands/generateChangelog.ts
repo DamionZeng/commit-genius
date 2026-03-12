@@ -1,19 +1,18 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { writeFile } from 'fs/promises';
-import { chatText } from '../utils/ai';
-import { getConfig } from '../utils/config';
+import { chatText, toUserSafeErrorMessage } from '../utils/ai';
+import { getConfigWithSecrets } from '../utils/config';
 import { createGit, getRecentCommits } from '../utils/git';
 import { changelogPrompt } from '../utils/prompts';
-import { getWorkspaceRoot } from '../utils/workspace';
+import { getWorkspaceRoot, resolveWorkspacePath } from '../utils/workspace';
 
-export async function generateChangelogCommand(): Promise<void> {
+export async function generateChangelogCommand(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Commit Genius: Generating CHANGELOG' },
     async () => {
       try {
         const root = getWorkspaceRoot();
-        const cfg = getConfig();
+        const cfg = await getConfigWithSecrets(context);
         const git = createGit(root);
         const commits = await getRecentCommits(git, 200);
 
@@ -28,7 +27,7 @@ export async function generateChangelogCommand(): Promise<void> {
           { role: 'user', content: changelogPrompt({ commits: commitLines }) }
         ]);
 
-        const outPath = path.resolve(root, cfg.changelog.path);
+        const outPath = resolveWorkspacePath(root, cfg.changelog.path);
         await writeFile(outPath, markdown.trimEnd() + '\n', 'utf8');
 
         const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(outPath));
@@ -36,7 +35,7 @@ export async function generateChangelogCommand(): Promise<void> {
 
         await vscode.window.showInformationMessage(`CHANGELOG generated: ${cfg.changelog.path}`);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = toUserSafeErrorMessage(err);
         await vscode.window.showErrorMessage(`Commit Genius: ${msg}`);
       }
     }

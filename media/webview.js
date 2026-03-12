@@ -246,6 +246,14 @@
           
           const target = inputs.target.value;
           vscode.postMessage({ type: 'saveConfig', target, values });
+
+          if (inputs['ai.apiKey']) {
+            inputs['ai.apiKey'].value = '';
+            inputs['ai.apiKey'].type = 'password';
+          }
+          if (showKeyCheckbox) {
+            showKeyCheckbox.checked = false;
+          }
       });
   }
 
@@ -289,6 +297,10 @@
       for (const [key, val] of Object.entries(cfg.values)) {
           const el = inputs[key];
           if (!el) continue;
+          if (key === 'ai.apiKey') {
+            el.value = '';
+            continue;
+          }
           
           if (el.type === 'checkbox') {
               el.checked = !!val;
