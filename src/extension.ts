@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { rm, writeFile } from 'fs/promises';
+import { rm } from 'fs/promises';
 import { getAdapter } from './adapters';
 import { generateCommitMessageCommand } from './commands/generateCommitMessage';
 import { generateChangelogCommand } from './commands/generateChangelog';
@@ -987,24 +987,38 @@ class DashboardPanel {
         const currentMessage =
           isRecord(payload) && typeof payload.message === 'string' ? payload.message : '';
         const mode = isRecord(payload) && typeof payload.mode === 'string' ? payload.mode : '';
+        const style = isRecord(payload) && typeof payload.style === 'string' ? payload.style : '';
+        const lang = isRecord(payload) && typeof payload.lang === 'string' ? payload.lang : '';
 
         if (!currentMessage.trim()) {
           await this.post({ type: 'toast', level: 'error', message: 'No commit message provided.' });
           return;
         }
 
-        const instruction =
-          mode === 'shorter'
+        let selectedStyle = style;
+        let selectedLang = lang;
+        if (!selectedStyle && !selectedLang && mode) {
+          if (mode === 'zh' || mode === 'en') selectedLang = mode;
+          else selectedStyle = mode;
+        }
+
+        const baseInstruction = 'Improve clarity while keeping it correct.';
+        const styleInstruction =
+          selectedStyle === 'shorter'
             ? 'Make it shorter and more direct.'
-            : mode === 'moreDetailed'
+            : selectedStyle === 'moreDetailed'
               ? 'Add a bit more detail in the body if useful.'
-              : mode === 'moreFormal'
+              : selectedStyle === 'moreFormal'
                 ? 'Make the tone more formal and professional.'
-                : mode === 'zh'
-                  ? 'Rewrite in Simplified Chinese.'
-                  : mode === 'en'
-                    ? 'Rewrite in English.'
-                    : 'Improve clarity while keeping it correct.';
+                : '';
+        const langInstruction =
+          selectedLang === 'zh'
+            ? 'Rewrite in Simplified Chinese.'
+            : selectedLang === 'en'
+              ? 'Rewrite in English.'
+              : '';
+
+        const instruction = [baseInstruction, styleInstruction, langInstruction].filter(Boolean).join(' ');
 
         const branch = await getHeadBranch(git);
         const status = await getStatusSummary(git);
@@ -1012,7 +1026,10 @@ class DashboardPanel {
         const diff = await getDiff(git, diffScope);
 
         await log('info', `branch=${branch}`);
-        await log('info', `rewrite=${mode || 'default'}`);
+        await log(
+          'info',
+          `rewrite=${[selectedStyle || 'auto', selectedLang || 'auto'].join('+')}${mode ? ` (legacy:${mode})` : ''}`
+        );
         await log('info', 'calling AI...');
 
         await this.post({ type: 'streamStart', action, title: 'Commit Message (rewriting)' });
@@ -1431,14 +1448,7 @@ class DashboardPanel {
         );
         await flush();
 
-        const outPath = path.resolve(root, cfg.changelog.path);
-        await writeFile(outPath, markdown.trimEnd() + '\n', 'utf8');
-        await log('success', `written=${cfg.changelog.path}`);
-
-        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(outPath));
-        await vscode.window.showTextDocument(doc, { preview: false });
-
-        await this.post({ type: 'result', action, title: `CHANGELOG (${cfg.changelog.path})`, content: markdown.trimEnd() });
+        await this.post({ type: 'result', action, title: 'CHANGELOG', content: markdown.trimEnd() });
         await this.post({ type: 'toast', level: 'success', message: 'CHANGELOG generated.' });
         return;
       }

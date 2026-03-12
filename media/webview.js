@@ -17,7 +17,9 @@
   let streamingCommitAction = '';
   let commitStreamPending = '';
   let commitStreamTimer = 0;
-  let commitRewriteMode = '';
+  let commitRewriteStyle = '';
+  let commitRewriteLang = '';
+  let commitModalHasGenerated = false;
   const commitMetaByHash = new Map();
 
   // --- DOM Elements ---
@@ -854,6 +856,38 @@
             actionName === 'rewriteCommitMessage');
         commitInput.disabled = lock;
       }
+      const commitActionLoading =
+        loading &&
+        (actionName === 'commitMessage' ||
+          actionName === 'rewriteCommitMessage' ||
+          actionName === 'commitGenerated' ||
+          actionName === 'amendGenerated');
+      const modalGenerateBtn = document.getElementById('cgCommitGenerate');
+      const modalClearBtn = document.getElementById('cgCommitClear');
+      const modalRefreshBtn = document.getElementById('cgCommitRefresh');
+      [modalGenerateBtn, modalClearBtn, modalRefreshBtn].forEach((btn) => {
+        if (!btn) return;
+        if (!commitActionLoading) {
+          if (btn.dataset.label) {
+            btn.textContent = btn.dataset.label;
+            delete btn.dataset.label;
+          }
+          btn.classList.remove('loading');
+          btn.disabled = false;
+          return;
+        }
+
+        if (btn === modalRefreshBtn) {
+          btn.classList.add('loading');
+          btn.disabled = true;
+          return;
+        }
+
+        if (!btn.dataset.label) btn.dataset.label = btn.textContent || '';
+        btn.textContent = `${btn.dataset.label}...`;
+        btn.classList.add('loading');
+        btn.disabled = true;
+      });
       if (!loading) {
         clearCommitStream();
       }
@@ -939,6 +973,7 @@
         background: var(--accent-hover);
         border-color: var(--accent-hover);
       }
+      .cg-btn.loading { opacity: 0.75; cursor: not-allowed; }
       .cg-loading-row {
         display: flex;
         gap: 10px;
@@ -961,7 +996,9 @@
       .cg-commit-card { width: min(860px, 100%); }
       .cg-commit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .cg-commit-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
-      .cg-mode-chips { display: flex; flex: 1; flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
+      .cg-mode-chips { display: flex; flex-direction: column; align-items: stretch; flex: 1; gap: 6px; }
+      .cg-mode-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .cg-mode-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
       .cg-mode-row { display: flex; flex-wrap: wrap; gap: 6px; }
       .cg-mode-chip {
         appearance: none;
@@ -978,6 +1015,15 @@
         background: color-mix(in srgb, var(--focus) 14%, transparent);
         color: var(--fg);
       }
+      .cg-btn.icon {
+        padding: 6px 9px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      .cg-btn.icon svg { width: 14px; height: 14px; }
+      .cg-btn.icon.loading svg { animation: cgSpin 0.9s linear infinite; }
       .cg-commit-textarea {
         width: 100%;
         min-height: 320px;
@@ -1283,12 +1329,30 @@
     const title = document.createElement('div');
     title.className = 'cg-card-title';
     title.textContent = 'Staging Area · Commit Message';
+    const headRight = document.createElement('div');
+    headRight.style.display = 'flex';
+    headRight.style.alignItems = 'center';
+    headRight.style.gap = '8px';
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'cg-btn icon';
+    refreshBtn.id = 'cgCommitRefresh';
+    refreshBtn.setAttribute('aria-label', 'Refresh');
+    refreshBtn.style.display = commitModalHasGenerated ? '' : 'none';
+    refreshBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+        <path d="M21 3v6h-6"></path>
+      </svg>
+    `;
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'cg-btn';
     closeBtn.textContent = 'Close';
     head.appendChild(title);
-    head.appendChild(closeBtn);
+    headRight.appendChild(refreshBtn);
+    headRight.appendChild(closeBtn);
+    head.appendChild(headRight);
 
     const textarea = document.createElement('textarea');
     textarea.id = 'cgCommitTextarea';
@@ -1307,52 +1371,119 @@
     actions.className = 'cg-commit-actions';
     const modesWrap = document.createElement('div');
     modesWrap.className = 'cg-mode-chips';
-    const modesRow = document.createElement('div');
-    modesRow.className = 'cg-mode-row';
-    const modes = [
+    const styleGroup = document.createElement('div');
+    styleGroup.className = 'cg-mode-group';
+    const styleLabel = document.createElement('div');
+    styleLabel.className = 'cg-mode-label';
+    styleLabel.textContent = 'Style';
+    const styleRow = document.createElement('div');
+    styleRow.className = 'cg-mode-row';
+    const styleModes = [
       { label: 'Auto', value: '' },
       { label: 'Shorter', value: 'shorter' },
       { label: 'More detail', value: 'moreDetailed' },
-      { label: 'Formal', value: 'moreFormal' },
-      { label: '中文', value: 'zh' },
-      { label: 'English', value: 'en' }
+      { label: 'Formal', value: 'moreFormal' }
     ];
-    modes.forEach((item, index) => {
+    styleModes.forEach((item, index) => {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'cg-mode-chip' + (index === 0 ? ' is-active' : '');
       chip.textContent = item.label;
       chip.dataset.mode = item.value;
       chip.addEventListener('click', () => {
-        commitRewriteMode = item.value;
-        modesRow.querySelectorAll('.cg-mode-chip').forEach((el) => {
+        commitRewriteStyle = item.value;
+        styleRow.querySelectorAll('.cg-mode-chip').forEach((el) => {
           el.classList.toggle('is-active', el === chip);
         });
       });
-      modesRow.appendChild(chip);
+      styleRow.appendChild(chip);
     });
-    commitRewriteMode = '';
-    modesWrap.appendChild(modesRow);
-    const generateBtn = document.createElement('button');
-    generateBtn.type = 'button';
-    generateBtn.className = 'cg-btn primary';
-    generateBtn.textContent = 'Generate';
-    generateBtn.addEventListener('click', () => {
+    commitRewriteStyle = '';
+    styleGroup.appendChild(styleLabel);
+    styleGroup.appendChild(styleRow);
+
+    const langGroup = document.createElement('div');
+    langGroup.className = 'cg-mode-group';
+    const langLabel = document.createElement('div');
+    langLabel.className = 'cg-mode-label';
+    langLabel.textContent = 'Language';
+    const langRow = document.createElement('div');
+    langRow.className = 'cg-mode-row';
+    const langModes = [
+      { label: 'Auto', value: '' },
+      { label: '中文', value: 'zh' },
+      { label: 'English', value: 'en' }
+    ];
+    langModes.forEach((item, index) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'cg-mode-chip' + (index === 0 ? ' is-active' : '');
+      chip.textContent = item.label;
+      chip.dataset.mode = item.value;
+      chip.addEventListener('click', () => {
+        commitRewriteLang = item.value;
+        langRow.querySelectorAll('.cg-mode-chip').forEach((el) => {
+          el.classList.toggle('is-active', el === chip);
+        });
+      });
+      langRow.appendChild(chip);
+    });
+    commitRewriteLang = '';
+    langGroup.appendChild(langLabel);
+    langGroup.appendChild(langRow);
+
+    modesWrap.appendChild(styleGroup);
+    modesWrap.appendChild(langGroup);
+
+    const runGenerate = () => {
       if (isRunning) return;
+      commitModalHasGenerated = true;
+      refreshBtn.style.display = '';
       const msg = String(textarea.value || '');
-      if (msg.trim() && commitRewriteMode) {
+      const hasRewriteOptions = Boolean(commitRewriteStyle) || Boolean(commitRewriteLang);
+      if (msg.trim() && hasRewriteOptions) {
         vscode.postMessage({
           type: 'runAction',
           action: 'rewriteCommitMessage',
-          payload: { message: msg, mode: commitRewriteMode }
+          payload: { message: msg, style: commitRewriteStyle, lang: commitRewriteLang }
         });
         return;
       }
       vscode.postMessage({ type: 'runAction', action: 'commitMessage' });
+    };
+
+    refreshBtn.addEventListener('click', () => {
+      runGenerate();
+    });
+
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'cg-btn';
+    clearBtn.id = 'cgCommitClear';
+    clearBtn.textContent = 'Clear';
+    clearBtn.addEventListener('click', () => {
+      if (isRunning) return;
+      textarea.value = '';
+      if (commitInput) {
+        isSyncingCommit = true;
+        commitInput.value = '';
+        commitInput.dispatchEvent(new Event('input', { bubbles: true }));
+        isSyncingCommit = false;
+      }
+    });
+
+    const generateBtn = document.createElement('button');
+    generateBtn.type = 'button';
+    generateBtn.className = 'cg-btn primary';
+    generateBtn.id = 'cgCommitGenerate';
+    generateBtn.textContent = 'Generate';
+    generateBtn.addEventListener('click', () => {
+      runGenerate();
     });
     const rightActions = document.createElement('div');
     rightActions.style.display = 'flex';
     rightActions.style.gap = '8px';
+    rightActions.appendChild(clearBtn);
     rightActions.appendChild(generateBtn);
     actions.appendChild(modesWrap);
     actions.appendChild(rightActions);
