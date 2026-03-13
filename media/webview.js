@@ -38,6 +38,7 @@
   const statusText = document.getElementById('statusText');
   const branchList = document.getElementById('branchList');
   const stepNodes = Array.from(document.querySelectorAll('.node[data-step]'));
+  const flowLinks = Array.from(document.querySelectorAll('.flow-link[data-link]'));
 
   if (statusWorkspace) {
     statusWorkspace.style.display = 'none';
@@ -145,6 +146,7 @@
         isRunning = message.state === 'running';
         currentAction = message.action || '';
         updateLoadingState(isRunning, currentAction);
+        updateFlowMotion(isRunning, currentAction);
         if (statusText) {
             statusText.textContent = isRunning ? 'Running...' : 'Idle';
             statusText.className = 'node-status ' + (isRunning ? 'warning' : 'success');
@@ -838,6 +840,29 @@
     stepNodes.forEach((el) => {
       el.classList.toggle('is-active', el.dataset.step === step);
     });
+  }
+
+  function getFlowSpecForAction(action) {
+    const a = String(action || '');
+    if (a === 'stageFiles') return { link: 'working-staging', dir: 'forward' };
+    if (a === 'unstageAll') return { link: 'working-staging', dir: 'backward' };
+    if (a === 'commitGenerated' || a === 'amendGenerated') return { link: 'staging-local', dir: 'forward' };
+    if (a === 'push') return { link: 'local-remote', dir: 'forward' };
+    if (a === 'pull') return { link: 'local-remote', dir: 'backward' };
+    return undefined;
+  }
+
+  function updateFlowMotion(loading, action) {
+    if (!flowLinks.length) return;
+    flowLinks.forEach((el) => {
+      el.classList.remove('is-flowing', 'dir-forward', 'dir-backward');
+    });
+    if (!loading) return;
+    const spec = getFlowSpecForAction(action);
+    if (!spec) return;
+    const target = flowLinks.find((el) => el.dataset.link === spec.link);
+    if (!target) return;
+    target.classList.add('is-flowing', spec.dir === 'backward' ? 'dir-backward' : 'dir-forward');
   }
 
   function updateLoadingState(loading, action) {

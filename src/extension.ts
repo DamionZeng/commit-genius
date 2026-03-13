@@ -1698,17 +1698,41 @@ class DashboardPanel {
         width: 28px;
         position: relative;
         flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
-      .flow-link::before {
-        content: '';
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: 100%;
-        height: 2px;
-        transform: translate(-50%, -50%);
-        background: color-mix(in srgb, var(--border) 70%, transparent);
-        border-radius: 999px;
+
+      .flow-connector {
+        width: 28px;
+        height: 40px;
+        display: block;
+      }
+      .flow-connector path {
+        fill: none;
+        stroke-linecap: round;
+      }
+      .flow-connector-base {
+        stroke: color-mix(in srgb, var(--border) 70%, transparent);
+        stroke-width: 2;
+        opacity: 0.95;
+      }
+      .flow-connector-flow {
+        stroke: color-mix(in srgb, var(--focus) 92%, #4cc2ff);
+        stroke-width: 2.5;
+        stroke-dasharray: 6 10;
+        opacity: 0;
+        filter: drop-shadow(0 0 6px color-mix(in srgb, var(--focus) 40%, transparent));
+      }
+      .flow-link.is-flowing .flow-connector-flow { opacity: 0.95; }
+      .flow-link.is-flowing.dir-forward .flow-connector-flow { animation: cgFlowFwd 1.15s linear infinite; }
+      .flow-link.is-flowing.dir-backward .flow-connector-flow { animation: cgFlowBwd 1.15s linear infinite; }
+
+      @keyframes cgFlowFwd { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -32; } }
+      @keyframes cgFlowBwd { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 32; } }
+
+      @media (prefers-reduced-motion: reduce) {
+        .flow-link.is-flowing .flow-connector-flow { animation: none; }
       }
       
       .node {
@@ -1902,10 +1926,12 @@ class DashboardPanel {
 
       @media (max-width: 900px) {
         .flow-row { flex-direction: column; }
-        .flow-link { width: 100%; height: 18px; }
-        .flow-link::before {
-          width: 2px;
-          height: 100%;
+        .flow-link { width: 100%; height: 28px; }
+        .flow-connector {
+          width: 28px;
+          height: 28px;
+          transform: rotate(90deg);
+          transform-origin: 50% 50%;
         }
       }
 
@@ -2168,7 +2194,12 @@ class DashboardPanel {
             </div>
           </div>
 
-          <div class="flow-link" aria-hidden="true"></div>
+          <div class="flow-link" data-link="working-staging" aria-hidden="true">
+            <svg class="flow-connector" viewBox="0 0 28 100" preserveAspectRatio="none" aria-hidden="true">
+              <path class="flow-connector-base" d="M1,50 C9,18 19,82 27,50"></path>
+              <path class="flow-connector-flow" d="M1,50 C9,18 19,82 27,50"></path>
+            </svg>
+          </div>
 
           <div class="flow-step">
             <div class="node" data-step="staging">
@@ -2209,7 +2240,12 @@ class DashboardPanel {
             </div>
           </div>
 
-          <div class="flow-link" aria-hidden="true"></div>
+          <div class="flow-link" data-link="staging-local" aria-hidden="true">
+            <svg class="flow-connector" viewBox="0 0 28 100" preserveAspectRatio="none" aria-hidden="true">
+              <path class="flow-connector-base" d="M1,50 C9,18 19,82 27,50"></path>
+              <path class="flow-connector-flow" d="M1,50 C9,18 19,82 27,50"></path>
+            </svg>
+          </div>
 
           <div class="flow-step">
             <div class="node" data-step="local">
@@ -2234,7 +2270,12 @@ class DashboardPanel {
             </div>
           </div>
 
-          <div class="flow-link" aria-hidden="true"></div>
+          <div class="flow-link" data-link="local-remote" aria-hidden="true">
+            <svg class="flow-connector" viewBox="0 0 28 100" preserveAspectRatio="none" aria-hidden="true">
+              <path class="flow-connector-base" d="M1,50 C9,18 19,82 27,50"></path>
+              <path class="flow-connector-flow" d="M1,50 C9,18 19,82 27,50"></path>
+            </svg>
+          </div>
 
           <div class="flow-step">
             <div class="node" data-step="remote">
