@@ -31,8 +31,8 @@ async function main() {
 
   const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE_PATH || findVsCodeExecutableFromPath();
   const runId = Date.now().toString(16);
-  const userDataDir = path.join(os.tmpdir(), `commit-genius-test-user-data-${runId}`);
-  const extensionsDir = path.join(os.tmpdir(), `commit-genius-test-extensions-${runId}`);
+  const userDataDir = path.join(os.tmpdir(), `git-genius-test-user-data-${runId}`);
+  const extensionsDir = path.join(os.tmpdir(), `git-genius-test-extensions-${runId}`);
 
   await runTests({
     extensionDevelopmentPath,

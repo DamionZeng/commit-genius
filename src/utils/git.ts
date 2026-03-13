@@ -131,7 +131,7 @@ function compactTimestamp(d = new Date()): string {
 
 export async function createSafetyBackupRef(git: SimpleGit, label: string): Promise<string> {
   const safeLabel = label.replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
-  const name = `refs/commit-genius/backup/${compactTimestamp()}${safeLabel ? `-${safeLabel}` : ''}`;
+  const name = `refs/git-genius/backup/${compactTimestamp()}${safeLabel ? `-${safeLabel}` : ''}`;
   await git.raw(['update-ref', name, 'HEAD']);
   return name;
 }

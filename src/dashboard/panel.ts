@@ -2,13 +2,13 @@ import * as vscode from 'vscode';
 
 import { runDashboardAction } from './actions';
 import { getCommitEditorHtml, getDashboardHtml } from './html';
-import type { DashboardAction, PanelToWebviewMessage } from './protocol';
+import type { ConfigTarget, DashboardAction, PanelToWebviewMessage } from './protocol';
 import { getNonce, parseWebviewMessage } from './protocol';
 import { toUserSafeErrorMessage } from './services/aiService';
 import { setAiApiKey } from '../utils/config';
 
 export class DashboardPanel {
-  static readonly viewType = 'commitGenius.panel';
+  static readonly viewType = 'gitGenius.panel';
   static current?: DashboardPanel;
 
   private abortController?: AbortController;
@@ -68,7 +68,7 @@ export class DashboardPanel {
 
     const panel = vscode.window.createWebviewPanel(
       DashboardPanel.viewType,
-      'Commit Genius',
+      'Git Genius',
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -86,7 +86,10 @@ export class DashboardPanel {
       void err;
     }
 
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'commit-genius.svg');
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(context.extensionUri, 'media', 'icon-light.png'),
+      dark: vscode.Uri.joinPath(context.extensionUri, 'media', 'icon-dark.png')
+    };
 
     const instance = new DashboardPanel(context, panel);
     DashboardPanel.current = instance;
@@ -109,6 +112,39 @@ export class DashboardPanel {
     } catch (err) {
       void err;
     }
+  }
+
+  private getSettingsConfigSnapshot(target: ConfigTarget): { target: ConfigTarget; values: Record<string, unknown> } {
+    const resolvedTarget: ConfigTarget =
+      target === 'workspace' && vscode.workspace.workspaceFolders?.length ? 'workspace' : 'global';
+
+    const c = vscode.workspace.getConfiguration('gitGenius');
+
+    const read = <T>(key: string, fallback: T): T => {
+      const inspected = c.inspect<T>(key);
+      const workspaceValue = inspected?.workspaceValue;
+      const globalValue = inspected?.globalValue;
+      const defaultValue = inspected?.defaultValue;
+      if (resolvedTarget === 'workspace') {
+        return workspaceValue ?? globalValue ?? defaultValue ?? fallback;
+      }
+      return globalValue ?? defaultValue ?? fallback;
+    };
+
+    return {
+      target: resolvedTarget,
+      values: {
+        'ai.baseUrl': read('ai.baseUrl', 'https://api.openai.com/v1'),
+        'ai.apiKey': '',
+        'ai.model': read('ai.model', 'gpt-4o-mini'),
+        'ai.temperature': read('ai.temperature', 0.2),
+        'commit.diffScope': read('commit.diffScope', 'staged'),
+        'changelog.path': read('changelog.path', 'CHANGELOG.md'),
+        'pr.platform': read('pr.platform', 'github'),
+        'pr.baseRef': read('pr.baseRef', ''),
+        'pr.includeChecklist': read('pr.includeChecklist', true)
+      }
+    };
   }
 
   private async onMessageFrom(panel: vscode.WebviewPanel, raw: unknown): Promise<void> {
@@ -162,7 +198,7 @@ export class DashboardPanel {
           ? vscode.ConfigurationTarget.Workspace
           : vscode.ConfigurationTarget.Global;
 
-      const c = vscode.workspace.getConfiguration('commitGenius');
+      const c = vscode.workspace.getConfiguration('gitGenius');
       const allowedKeys = new Set([
         'ai.baseUrl',
         'ai.model',
@@ -175,6 +211,7 @@ export class DashboardPanel {
       ]);
 
       try {
+        await this.post({ type: 'settingsRunState', action: 'save', state: 'running' });
         const rawKey = typeof values['ai.apiKey'] === 'string' ? values['ai.apiKey'] : '';
         if (rawKey && rawKey.trim()) {
           await setAiApiKey(this.extensionContext, rawKey);
@@ -193,10 +230,27 @@ export class DashboardPanel {
         }
         await Promise.all(updates);
 
+        await this.post({ type: 'config', config: this.getSettingsConfigSnapshot(target) });
         await this.post({ type: 'toast', level: 'success', message: 'Settings saved.' });
       } catch (err) {
         const msg = toUserSafeErrorMessage(err);
         await this.post({ type: 'toast', level: 'error', message: msg });
+      } finally {
+        await this.post({ type: 'settingsRunState', action: 'save', state: 'idle' });
+      }
+      return;
+    }
+
+    if (message.type === 'reloadConfig') {
+      try {
+        await this.post({ type: 'settingsRunState', action: 'reload', state: 'running' });
+        await this.post({ type: 'config', config: this.getSettingsConfigSnapshot(message.target) });
+        await this.post({ type: 'toast', level: 'success', message: 'Settings reloaded.' });
+      } catch (err) {
+        const msg = toUserSafeErrorMessage(err);
+        await this.post({ type: 'toast', level: 'error', message: msg });
+      } finally {
+        await this.post({ type: 'settingsRunState', action: 'reload', state: 'idle' });
       }
       return;
     }
@@ -279,7 +333,7 @@ export class DashboardPanel {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      'commitGenius.commitEditor',
+      'gitGenius.commitEditor',
       'Commit Message',
       vscode.ViewColumn.Beside,
       {

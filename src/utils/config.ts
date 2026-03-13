@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 export type DiffScope = 'staged' | 'workingTree';
 export type PrPlatform = 'github' | 'gitlab' | 'bitbucket';
 
-export const AI_API_KEY_SECRET_KEY = 'commitGenius.ai.apiKey';
+export const AI_API_KEY_SECRET_KEY = 'gitGenius.ai.apiKey';
 
 export interface ExtensionConfig {
   ai: {
@@ -26,7 +26,7 @@ export interface ExtensionConfig {
 }
 
 export function getConfig(): ExtensionConfig {
-  const c = vscode.workspace.getConfiguration('commitGenius');
+  const c = vscode.workspace.getConfiguration('gitGenius');
   return {
     ai: {
       baseUrl: c.get<string>('ai.baseUrl', 'https://api.openai.com/v1'),
@@ -49,7 +49,7 @@ export function getConfig(): ExtensionConfig {
 }
 
 export async function getAiApiKey(context: vscode.ExtensionContext): Promise<string> {
-  const c = vscode.workspace.getConfiguration('commitGenius');
+  const c = vscode.workspace.getConfiguration('gitGenius');
   const inspected = c.inspect<string>('ai.apiKey');
   const workspaceValue = typeof inspected?.workspaceValue === 'string' ? inspected.workspaceValue : '';
   const globalValue = typeof inspected?.globalValue === 'string' ? inspected.globalValue : '';
@@ -77,7 +77,7 @@ export async function setAiApiKey(context: vscode.ExtensionContext, apiKey: stri
 
   await context.secrets.store(AI_API_KEY_SECRET_KEY, key);
 
-  const c = vscode.workspace.getConfiguration('commitGenius');
+  const c = vscode.workspace.getConfiguration('gitGenius');
   const inspected = c.inspect<string>('ai.apiKey');
   const workspaceValue = typeof inspected?.workspaceValue === 'string' ? inspected.workspaceValue : '';
   const globalValue = typeof inspected?.globalValue === 'string' ? inspected.globalValue : '';

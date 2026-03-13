@@ -8,7 +8,7 @@ import { getWorkspaceRoot, resolveWorkspacePath } from '../utils/workspace';
 
 export async function generateChangelogCommand(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Commit Genius: Generating CHANGELOG' },
+    { location: vscode.ProgressLocation.Notification, title: 'Git Genius: Generating CHANGELOG' },
     async () => {
       try {
         const root = getWorkspaceRoot();
@@ -36,7 +36,7 @@ export async function generateChangelogCommand(context: vscode.ExtensionContext)
         await vscode.window.showInformationMessage(`CHANGELOG generated: ${cfg.changelog.path}`);
       } catch (err) {
         const msg = toUserSafeErrorMessage(err);
-        await vscode.window.showErrorMessage(`Commit Genius: ${msg}`);
+        await vscode.window.showErrorMessage(`Git Genius: ${msg}`);
       }
     }
   );

@@ -8,15 +8,14 @@ import { DashboardPanel } from './dashboard/panel';
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider('commit-genius-git', new GitRefContentProvider()),
-    vscode.workspace.registerTextDocumentContentProvider('commit-genius-empty', new EmptyContentProvider()),
-    vscode.commands.registerCommand('commitGenius.generateCommitMessage', () => generateCommitMessageCommand(context)),
-    vscode.commands.registerCommand('commitGenius.generateChangelog', () => generateChangelogCommand(context)),
-    vscode.commands.registerCommand('commitGenius.generatePrDescription', () => generatePrDescriptionCommand(context)),
-    vscode.commands.registerCommand('commitGenius.openPanel', () => DashboardPanel.createOrShow(context))
+    vscode.workspace.registerTextDocumentContentProvider('git-genius-git', new GitRefContentProvider()),
+    vscode.workspace.registerTextDocumentContentProvider('git-genius-empty', new EmptyContentProvider()),
+    vscode.commands.registerCommand('gitGenius.generateCommitMessage', () => generateCommitMessageCommand(context)),
+    vscode.commands.registerCommand('gitGenius.generateChangelog', () => generateChangelogCommand(context)),
+    vscode.commands.registerCommand('gitGenius.generatePrDescription', () => generatePrDescriptionCommand(context)),
+    vscode.commands.registerCommand('gitGenius.openPanel', () => DashboardPanel.createOrShow(context))
   );
 }
 
 export function deactivate() {
 }
-

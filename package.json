@@ -1,84 +1,102 @@
 {
-  "name": "commit-genius",
-  "displayName": "Commit Genius",
+  "name": "git-genius",
+  "displayName": "Git Genius",
   "description": "AI-powered Conventional Commit, CHANGELOG, and PR description generator.",
   "version": "0.0.1",
-  "publisher": "your-publisher",
+  "publisher": "your-publisher-id",
+  "license": "MIT",
+  "homepage": "https://github.com/your-username/git-genius#readme",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/your-username/git-genius.git"
   },
+  "bugs": {
+    "url": "https://github.com/your-username/git-genius/issues"
+  },
+  "keywords": [
+    "git",
+    "commit",
+    "ai",
+    "gpt",
+    "changelog",
+    "pr",
+    "conventional-commits",
+    "workflow"
+  ],
+  "icon": "media/icon-dark.png",
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Source Control"
+    "Source Control",
+    "AI",
+    "Productivity"
   ],
   "activationEvents": [
-    "onCommand:commitGenius.generateCommitMessage",
-    "onCommand:commitGenius.generateChangelog",
-    "onCommand:commitGenius.generatePrDescription",
-    "onCommand:commitGenius.openPanel"
+    "onCommand:gitGenius.generateCommitMessage",
+    "onCommand:gitGenius.generateChangelog",
+    "onCommand:gitGenius.generatePrDescription",
+    "onCommand:gitGenius.openPanel"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "commitGenius.generateCommitMessage",
-        "title": "Commit Genius: Generate Commit Message"
+        "command": "gitGenius.generateCommitMessage",
+        "title": "Git Genius: Generate Commit Message"
       },
       {
-        "command": "commitGenius.generateChangelog",
-        "title": "Commit Genius: Generate CHANGELOG"
+        "command": "gitGenius.generateChangelog",
+        "title": "Git Genius: Generate CHANGELOG"
       },
       {
-        "command": "commitGenius.generatePrDescription",
-        "title": "Commit Genius: Generate PR Description"
+        "command": "gitGenius.generatePrDescription",
+        "title": "Git Genius: Generate PR Description"
       },
       {
-        "command": "commitGenius.openPanel",
-        "title": "Commit Genius: Open",
+        "command": "gitGenius.openPanel",
+        "title": "Git Genius: Open",
         "icon": {
-          "light": "media/commit-genius.svg",
-          "dark": "media/commit-genius.svg"
+          "light": "media/icon-light.png",
+          "dark": "media/icon-dark.png"
         }
       }
     ],
     "menus": {
       "editor/title": [
         {
-          "command": "commitGenius.openPanel",
+          "command": "gitGenius.openPanel",
           "when": "editorTextFocus",
           "group": "navigation@1"
         }
       ]
     },
     "configuration": {
-      "title": "Commit Genius",
+      "title": "Git Genius",
       "properties": {
-        "commitGenius.ai.baseUrl": {
+        "gitGenius.ai.baseUrl": {
           "type": "string",
           "default": "https://api.openai.com/v1",
           "description": "OpenAI-compatible API base URL."
         },
-        "commitGenius.ai.apiKey": {
+        "gitGenius.ai.apiKey": {
           "type": "string",
           "default": "",
           "description": "API key for the AI provider."
         },
-        "commitGenius.ai.model": {
+        "gitGenius.ai.model": {
           "type": "string",
           "default": "gpt-4o-mini",
           "description": "Model name for chat completions."
         },
-        "commitGenius.ai.temperature": {
+        "gitGenius.ai.temperature": {
           "type": "number",
           "default": 0.2,
           "minimum": 0,
           "maximum": 2,
           "description": "Sampling temperature for the AI model."
         },
-        "commitGenius.commit.diffScope": {
+        "gitGenius.commit.diffScope": {
           "type": "string",
           "enum": [
             "staged",
@@ -87,12 +105,12 @@
           "default": "staged",
           "description": "Which diff to use when generating commit messages."
         },
-        "commitGenius.changelog.path": {
+        "gitGenius.changelog.path": {
           "type": "string",
           "default": "CHANGELOG.md",
           "description": "Output path for generated changelog (relative to workspace root)."
         },
-        "commitGenius.pr.platform": {
+        "gitGenius.pr.platform": {
           "type": "string",
           "enum": [
             "github",
@@ -102,12 +120,12 @@
           "default": "github",
           "description": "Target platform format for PR description."
         },
-        "commitGenius.pr.baseRef": {
+        "gitGenius.pr.baseRef": {
           "type": "string",
           "default": "",
           "description": "Base ref for PR comparison, e.g. origin/main. If empty, auto-detected."
         },
-        "commitGenius.pr.includeChecklist": {
+        "gitGenius.pr.includeChecklist": {
           "type": "boolean",
           "default": true,
           "description": "Include a lightweight review checklist in the generated PR description."

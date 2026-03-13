@@ -7,7 +7,7 @@ import { getWorkspaceRoot } from '../utils/workspace';
 
 export async function generateCommitMessageCommand(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Commit Genius: Generating commit message' },
+    { location: vscode.ProgressLocation.Notification, title: 'Git Genius: Generating commit message' },
     async () => {
       try {
         const root = getWorkspaceRoot();
@@ -38,7 +38,7 @@ export async function generateCommitMessageCommand(context: vscode.ExtensionCont
         await vscode.window.showInformationMessage('Commit message generated and filled into the Source Control input box.');
       } catch (err) {
         const msg = toUserSafeErrorMessage(err);
-        await vscode.window.showErrorMessage(`Commit Genius: ${msg}`);
+        await vscode.window.showErrorMessage(`Git Genius: ${msg}`);
       }
     }
   );

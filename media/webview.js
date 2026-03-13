@@ -91,6 +91,30 @@
       case 'toast':
         showToast(message.message, message.level);
         break;
+      case 'config':
+        if (message.config) {
+          config = message.config;
+          populateConfig(config);
+        }
+        if (inputs['ai.apiKey']) {
+          inputs['ai.apiKey'].value = '';
+          inputs['ai.apiKey'].type = 'password';
+        }
+        if (showKeyCheckbox) {
+          showKeyCheckbox.checked = false;
+        }
+        break;
+      case 'settingsRunState':
+        {
+          const action = String(message.action || '');
+          const running = message.state === 'running';
+          if (action === 'save') {
+            setInlineButtonLoading(saveBtn, running);
+          } else if (action === 'reload') {
+            setInlineButtonLoading(reloadBtn, running);
+          }
+        }
+        break;
       case 'repoState':
         handleRepoState(message);
         break;
@@ -233,6 +257,8 @@
   // 4. Config Actions
   if (saveBtn) {
       saveBtn.addEventListener('click', () => {
+          if (saveBtn.disabled) return;
+          setInlineButtonLoading(saveBtn, true);
           const values = {};
           // Collect values
           for (const [key, el] of Object.entries(inputs)) {
@@ -261,12 +287,10 @@
 
   if (reloadBtn) {
       reloadBtn.addEventListener('click', () => {
-          // In a real app we might reload from disk, but here we just re-populate with initial or current memory
-          populateConfig(config); 
-          // Or ask extension to reload? The extension sends initial config on load.
-          // Since we don't have a 'reloadConfig' command, we just re-apply what we have or maybe we should have one.
-          // For now, let's just show a toast.
-          showToast('Reset to the initial state.', 'info');
+          if (reloadBtn.disabled) return;
+          setInlineButtonLoading(reloadBtn, true);
+          const target = inputs.target && inputs.target.value === 'global' ? 'global' : 'workspace';
+          vscode.postMessage({ type: 'reloadConfig', target });
       });
   }
   
@@ -288,6 +312,23 @@
   });
 
   // --- Helper Functions ---
+
+  function setInlineButtonLoading(btn, loading) {
+      if (!btn) return;
+      if (loading) {
+          if (!btn.dataset.label) btn.dataset.label = btn.textContent || '';
+          btn.textContent = `${btn.dataset.label}...`;
+          btn.classList.add('loading');
+          btn.disabled = true;
+          return;
+      }
+      if (btn.dataset.label) {
+          btn.textContent = btn.dataset.label;
+          delete btn.dataset.label;
+      }
+      btn.classList.remove('loading');
+      btn.disabled = false;
+  }
 
   function populateConfig(cfg) {
       if (!cfg || !cfg.values) return;
@@ -1107,7 +1148,7 @@
     card.className = 'cg-card';
     const title = document.createElement('div');
     title.className = 'cg-card-title';
-    title.textContent = 'Commit Genius';
+    title.textContent = 'Git Genius';
     const row = document.createElement('div');
     row.className = 'cg-loading-row';
     const spinner = document.createElement('div');

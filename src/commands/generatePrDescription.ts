@@ -16,7 +16,7 @@ function isPrJson(value: unknown): value is PrJson {
 
 export async function generatePrDescriptionCommand(context: vscode.ExtensionContext): Promise<void> {
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Commit Genius: Generating PR description' },
+    { location: vscode.ProgressLocation.Notification, title: 'Git Genius: Generating PR description' },
     async () => {
       try {
         const root = getWorkspaceRoot();
@@ -50,7 +50,7 @@ export async function generatePrDescriptionCommand(context: vscode.ExtensionCont
         await vscode.window.showInformationMessage('PR description generated and copied to clipboard.');
       } catch (err) {
         const msg = toUserSafeErrorMessage(err);
-        await vscode.window.showErrorMessage(`Commit Genius: ${msg}`);
+        await vscode.window.showErrorMessage(`Git Genius: ${msg}`);
       }
     }
   );

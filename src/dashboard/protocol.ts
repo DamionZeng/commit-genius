@@ -30,7 +30,8 @@ export type WebviewMessage =
   | { type: 'confirmResult'; id: string; ok: boolean }
   | { type: 'promptResult'; id: string; value?: string }
   | { type: 'cancel' }
-  | { type: 'saveConfig'; target: ConfigTarget; values: Record<string, unknown> };
+  | { type: 'saveConfig'; target: ConfigTarget; values: Record<string, unknown> }
+  | { type: 'reloadConfig'; target: ConfigTarget };
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -93,6 +94,11 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
     return { type: 'saveConfig', target, values: value.values };
   }
 
+  if (value.type === 'reloadConfig') {
+    const target: ConfigTarget = value.target === 'global' ? 'global' : 'workspace';
+    return { type: 'reloadConfig', target };
+  }
+
   return undefined;
 }
 
@@ -108,7 +114,13 @@ export function getNonce(): string {
 export type LogLevel = 'info' | 'success' | 'error' | 'warn';
 
 export type PanelToWebviewMessage =
-  | { type: 'toast'; level: 'success' | 'error'; message: string }
+  | { type: 'toast'; level: 'success' | 'error' | 'info'; message: string }
+  | {
+      type: 'settingsRunState';
+      action: 'save' | 'reload';
+      state: 'running' | 'idle';
+    }
+  | { type: 'config'; config: { target: ConfigTarget; values: Record<string, unknown> } }
   | { type: 'runState'; state: 'running' | 'idle'; action?: DashboardAction; durationMs?: number }
   | { type: 'log'; level: LogLevel; message: string }
   | { type: 'streamStart'; action: DashboardAction; title: string }

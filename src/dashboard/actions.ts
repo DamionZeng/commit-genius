@@ -286,7 +286,7 @@ export async function runDashboardAction(args: {
 
         if (isDirty(s)) {
           try {
-            const stash = await createSafetyStash(git, `commit-genius: safety stash before hard reset (${ref})`);
+            const stash = await createSafetyStash(git, `git-genius: safety stash before hard reset (${ref})`);
             await log('info', `safetyStash=${stash.output || '(no output)'}`);
             if (stash.created) {
               await args.post({ type: 'toast', level: 'success', message: 'Safety stash created.' });
@@ -344,9 +344,9 @@ export async function runDashboardAction(args: {
 
       const makeGitUri = (ref: string): vscode.Uri => {
         const q = new URLSearchParams({ ref, path: relPath }).toString();
-        return vscode.Uri.parse(`commit-genius-git:/${encodeURIComponent(relPath)}?${q}`);
+        return vscode.Uri.parse(`git-genius-git:/${encodeURIComponent(relPath)}?${q}`);
       };
-      const emptyUri = vscode.Uri.parse(`commit-genius-empty:/${encodeURIComponent(relPath)}`);
+      const emptyUri = vscode.Uri.parse(`git-genius-empty:/${encodeURIComponent(relPath)}`);
 
       const kind = payload.kind;
 
@@ -455,7 +455,7 @@ export async function runDashboardAction(args: {
       try {
         const stash = await createSafetyStash(
           git,
-          `commit-genius: safety stash before checkoutFiles (${files.length} files)`,
+          `git-genius: safety stash before checkoutFiles (${files.length} files)`,
           allPaths
         );
         await log('info', `safetyStash=${stash.output || '(no output)'}`);
@@ -924,7 +924,7 @@ export async function runDashboardAction(args: {
 
         if (isDirty(s)) {
           try {
-            const stash = await createSafetyStash(git, `commit-genius: safety stash before hard reset (${ref})`);
+            const stash = await createSafetyStash(git, `git-genius: safety stash before hard reset (${ref})`);
             await log('info', `safetyStash=${stash.output || '(no output)'}`);
             if (stash.created) {
               await args.post({ type: 'toast', level: 'success', message: 'Safety stash created.' });
@@ -1049,4 +1049,3 @@ export async function runDashboardAction(args: {
     await args.post({ type: 'runState', state: 'idle', action, durationMs: Date.now() - startedAt });
   }
 }
-

@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { getNonce } from './protocol';
 
 export function getInitialConfig() {
-  const c = vscode.workspace.getConfiguration('commitGenius');
+  const c = vscode.workspace.getConfiguration('gitGenius');
   return {
     target: vscode.workspace.workspaceFolders?.length ? ('workspace' as const) : ('global' as const),
     values: {
@@ -32,7 +32,7 @@ export function getDashboardHtml(context: vscode.ExtensionContext, webview: vsco
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};" />
-    <title>Commit Genius</title>
+    <title>Git Genius</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -525,7 +525,7 @@ export function getDashboardHtml(context: vscode.ExtensionContext, webview: vsco
       
       /* Toast & Log (Hidden by default or minimized) */
       .toast {
-        position: fixed; top: 20px; right: 20px; z-index: 100;
+        position: fixed; top: 20px; right: 20px; z-index: 300;
         padding: 12px 16px; border-radius: 8px;
         border: 1px solid var(--border);
         background: var(--bg);
@@ -537,6 +537,7 @@ export function getDashboardHtml(context: vscode.ExtensionContext, webview: vsco
       .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
       .dot.ok { background: #2ea043; }
       .dot.bad { background: #f85149; }
+      .btn.loading { cursor: progress; opacity: 0.85; }
 
       .log-section {
         margin-top: 32px;
@@ -604,7 +605,7 @@ export function getDashboardHtml(context: vscode.ExtensionContext, webview: vsco
 
       <!-- Header -->
       <div class="title">
-        <h1>Commit Genius <span class="sub">AI-powered Git assistant</span></h1>
+        <h1>Git Genius <span class="sub">AI-powered Git assistant</span></h1>
         <div class="inline">
           <button class="btn secondary icon-btn" id="openSettingsPanel" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -962,4 +963,3 @@ export function getCommitEditorHtml(
   </body>
 </html>`;
 }
-
